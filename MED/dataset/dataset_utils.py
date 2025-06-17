@@ -402,7 +402,7 @@ def retrieve_dataloaders(fold_data_path:str,
                                                                                             
         #
         return image_pairs_train, kinematics_pairs_train, labels_train, \
-                train_pairs_df, image_pairs_test, kinematics_pairs_test, labels_test, test_pairs_df                                  
+                train_pairs_df, image_pairs_test, kinematics_pairs_test, labels_test, test_pairs_d                                  
                                                                                     
  
            
