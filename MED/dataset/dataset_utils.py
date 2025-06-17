@@ -4,7 +4,7 @@ import pandas as pd
 import torch
 
 from torch.utils.data import DataLoader
-from .CustomWindowDataset import CustomWindowDataset
+from .CustomWindowDataset import CustomWindowDataset, SiameseWindowDataset
 
 def compute_n_frames(fold_data_path:str,
                       csv_file: pd.DataFrame) -> int:
@@ -296,8 +296,6 @@ def load_siamese_pairs(pairs_df: pd.DataFrame,
 
 
 
-
-
 def load_and_window(fold_data_path:str,
                     window_size:int = 30,
                     stride:int = 20):
@@ -402,8 +400,9 @@ def retrieve_dataloaders(fold_data_path:str,
                                                                                                 train=False,
                                                                                                 exp_kwargs=exp_kwargs)
                                                                                             
-        return image_pairs_train, kinematics_pairs_train, labels_train, train_pairs_df, \
-                image_pairs_test, kinematics_pairs_test, labels_test, test_pairs_df
+        #
+        return image_pairs_train, kinematics_pairs_train, labels_train, \
+                train_pairs_df, image_pairs_test, kinematics_pairs_test, labels_test, test_pairs_df                                  
                                                                                     
  
            
