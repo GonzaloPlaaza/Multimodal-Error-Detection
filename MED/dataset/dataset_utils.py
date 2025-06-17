@@ -225,13 +225,8 @@ def compute_window_size_stride(frequency: int = 30) -> tuple:
 def load_siamese_pairs(pairs_df: pd.DataFrame,
                        image_train_data: torch.Tensor,
                         kinematics_train_data: torch.Tensor,  
-                        g_labels_train_data: torch.Tensor,
-                        e_labels_train_data: torch.Tensor,
-                        subject_train_data: pd.DataFrame,
                         image_data_test: torch.Tensor = None,
                         kinematics_data_test: torch.Tensor = None,
-                        g_labels_data_test: torch.Tensor = None,
-                        e_labels_data_test: torch.Tensor = None,
                         subject_data_test: pd.DataFrame = None,
                         train: bool = True,
                         exp_kwargs: dict = {}
@@ -251,8 +246,6 @@ def load_siamese_pairs(pairs_df: pd.DataFrame,
             tuple: A tuple containing the pairs of images, pairs of kinematics, labels, and a DataFrame with the pairs information.
         """
         
-        pairs_images = []
-        pairs_kinematics = []
         labels = []
 
         if train:
@@ -264,31 +257,44 @@ def load_siamese_pairs(pairs_df: pd.DataFrame,
             new_pairs_df = pd.concat([df_0, df_1], ignore_index=True)
         
         else: 
-            #Each test sample is paired with all the normal training samples for comparison through the siamese network.
-            #However, this would explode the computation.
-            #For each test sample, we will only take n_comparisons samples from the training set.
-            #subject_1 is train example, subject_2 is test example.
-            
-            n_comparisons = exp_kwargs['n_comparisons']
-            unique_subjects_test = subject_data_test['subject'].unique()
-            new_pairs_df = pd.DataFrame(columns=['subject_1', 'gesture_label_1', 'position_1', 'subject_2', 'gesture_label_2', 'position_2', 'label'])
+            #For testing, we use all the pairs in the dataframe
+            new_pairs_df = pairs_df.copy()
 
-            for subject in unique_subjects_test:
-                #Get the pairs for this subject
-                df_subject = pairs_df[pairs_df['subject_2'] == subject]
-                
-                #Sample n_comparisons pairs from the subject
-                if len(df_subject) > n_comparisons:
-                    df_subject = df_subject.sample(n=n_comparisons, replace=False, random_state=42)
-                
-                #Add the pairs to the new pairs DataFrame
-                new_pairs_df = pd.concat([new_pairs_df, df_subject], ignore_index=True)   
-
-        #
-
-
-
+        #Create image pairs, kinematics pairs, position (#window) pairs, and labels
+        image_pairs = torch.empty((len(new_pairs_df), 2, 30, 2048)) #n_pairs, 2 pairs, 30 frames, 2048 features
+        kinematics_pairs = torch.empty((len(new_pairs_df), 2, 30, 26)) #n_pairs, 2 pairs, 30 frames, 26 features
+        labels = torch.empty((len(new_pairs_df), 1))
         
+        for i, row in new_pairs_df.iterrows():
+            #Get the positions of the pairs
+            pos_1 = row['position_1']
+            pos_2 = row['position_2']
+
+            #Get the label
+            label = row['label']
+
+            #Get the image and kinematics data for the pairs
+            if train:
+                image_pairs[i, 0] = image_train_data[pos_1]
+                image_pairs[i, 1] = image_train_data[pos_2]
+                kinematics_pairs[i, 0] = kinematics_train_data[pos_1]
+                kinematics_pairs[i, 1] = kinematics_train_data[pos_2]
+
+            else:
+                #For test data, we use the train data (first position) and test data (second position)
+                image_pairs[i, 0] = image_train_data[pos_1]
+                image_pairs[i, 1] = image_data_test[pos_2]
+                kinematics_pairs[i, 0] = kinematics_train_data[pos_1]
+                kinematics_pairs[i, 1] = kinematics_data_test[pos_2]
+
+            labels[i] = label
+
+        return (image_pairs,
+                kinematics_pairs,
+                labels,
+                new_pairs_df)
+
+
 
 
 
@@ -377,26 +383,24 @@ def retrieve_dataloaders(fold_data_path:str,
     #c. Create datasets and dataloaders
     if exp_kwargs['siamese']: #Siamese networks require a different type of dataset.
         print("Creating Siamese pairs...")
-        image_pairs_train, kinematics_pairs_train, labels_train, train_pairs_df = load_siamese_pairs(image_data, 
-                                                                                                        kinematics_data, 
-                                                                                                        g_labels_data, 
-                                                                                                        e_labels_data, 
-                                                                                                        subject_data,
-                                                                                                        train=True,
-                                                                                                        exp_kwargs=exp_kwargs)
-        
-        image_pairs_test, kinematics_pairs_test, labels_test, test_pairs_df = load_siamese_pairs(image_data,
-                                                                                                    kinematics_data, 
-                                                                                                    g_labels_data, 
-                                                                                                    e_labels_data, 
-                                                                                                    subject_data,
-                                                                                                    image_data_test=image_test_data,
-                                                                                                    kinematics_data_test=kinematics_test_data,
-                                                                                                    g_labels_data_test=g_labels_test_data,
-                                                                                                    e_labels_data_test=e_labels_test_data,
-                                                                                                    subject_data_test=subject_test_data,
-                                                                                                    train=False,
+
+        pairs_df_train = pd.read_csv(os.path.join(fold_data_path, 'train_pairs.csv'))
+        pairs_df_test = pd.read_csv(os.path.join(fold_data_path, 'test_pairs.csv'))
+
+        image_pairs_train, kinematics_pairs_train, labels_train, train_pairs_df = load_siamese_pairs(pairs_df=pairs_df_train,
+                                                                                                    image_train_data= image_data,
+                                                                                                    kinematics_train_data= kinematics_data, 
+                                                                                                    train=True,
                                                                                                     exp_kwargs=exp_kwargs)
+        
+        image_pairs_test, kinematics_pairs_test, labels_test, test_pairs_df = load_siamese_pairs(pairs_df=pairs_df_test,
+                                                                                                image_train_data=image_data,
+                                                                                                kinematics_train_data=kinematics_data,
+                                                                                                image_data_test=image_test_data,
+                                                                                                kinematics_data_test=kinematics_test_data,
+                                                                                                subject_data_test=subject_test_data,
+                                                                                                train=False,
+                                                                                                exp_kwargs=exp_kwargs)
                                                                                             
         return image_pairs_train, kinematics_pairs_train, labels_train, train_pairs_df, \
                 image_pairs_test, kinematics_pairs_test, labels_test, test_pairs_df
@@ -463,6 +467,8 @@ def create_siamese_pairs(fold_data_path:str,
                     fold_data_path=fold_data_path,
                     window_size=window_size,
                     stride=stride)
+        
+        torch.manual_seed(42)
 
         if exp_kwargs['binary_error']:
             #If binary error, we only consider the last error label (index 4)
@@ -542,35 +548,47 @@ def create_siamese_pairs(fold_data_path:str,
         else: #Testing data
 
             #The TESTING data is paired in the following way.
-            #Each test window is paired with ALL the non-erroneous (0) training set windows.
-            for i in range(len(g_labels_data_train)):
-                
-                #If the training window is not erroneous, create pairs with all test windows
-                if e_labels_data_train[i] == 0: #not erroneous
+            #Each test window is paired with "n_comparisons" non-erroneous (0) training set windows.
+            
 
-                    for j in range(len(g_labels_data_test)):
-
-                        #Labeling
-                        if e_labels_data_test[j] == 0: 
-                            label = 0
-                        elif e_labels_data_test[j] == 1: 
-                            label = 1
+            #Find all non-erroneous training windows
+            train_indices = (e_labels_data_train == 0).nonzero(as_tuple=True)[0]
+            train_indices = train_indices.tolist()
+        
+            for i in range(len(g_labels_data_test)):
                 
-                        else: continue 
-
-                        test_pairs_df.append({
-                            'subject_1': subject_data_train['subject'][i],
-                            'gesture_label_1': g_labels_data_train[i].item(),
-                            'position_1': i,
-                            'subject_2': subject_data_test['subject'][j],
-                            'gesture_label_2': g_labels_data_test[j].item(),
-                            'position_2': j,
-                            'label': label
-                        })
-                        n_pairs += 1
+                #Sample n_comparisons random training windows
+                n_comparisons = exp_kwargs['n_comparisons']
+                if len(train_indices) < n_comparisons:
+                    print(f"Warning: Not enough training windows to compare with test window {i}.")
+                    continue
                 
+                sampled_indices = torch.randperm(len(train_indices))[:n_comparisons]
+                train_indices_chosen = [train_indices[idx] for idx in sampled_indices]
+                
+                for j in train_indices_chosen:
+                    #Create pair
+                    #Labeling
+                    if e_labels_data_test[i] == 0 and e_labels_data_train[j] == 0:
+                        label = 0
+                    
+                    elif e_labels_data_test[i] == 1 and e_labels_data_train[j] == 0:
+                        label = 1
+
+                    else: continue
+
+                    test_pairs_df.append({
+                        'subject_1': subject_data_train['subject'][j],
+                        'gesture_label_1': g_labels_data_train[j].item(),
+                        'position_1': j,
+                        'subject_2': subject_data_test['subject'][i],
+                        'gesture_label_2': g_labels_data_test[i].item(),
+                        'position_2': i,
+                        'label': label
+                    })
+
                 if i % 200 == 0:
-                    print(f"Processed {i}/{len(g_labels_data_train)} training windows.")
+                    print(f"Processed {i}/{len(g_labels_data_test)} training windows.")
 
         if train:
             train_pairs_df = pd.DataFrame(train_pairs_df)
