@@ -4,7 +4,8 @@ import pandas as pd
 import torch
 
 from torch.utils.data import DataLoader
-from .CustomWindowDataset import CustomWindowDataset, SiameseWindowDataset
+from .CustomWindowDataset import CustomWindowDataset
+from .SiameseWindowDataset import SiameseWindowDataset
 
 def compute_n_frames(fold_data_path:str,
                       csv_file: pd.DataFrame) -> int:
@@ -400,10 +401,21 @@ def retrieve_dataloaders(fold_data_path:str,
                                                                                                 train=False,
                                                                                                 exp_kwargs=exp_kwargs)
                                                                                             
-        #
-        return image_pairs_train, kinematics_pairs_train, labels_train, \
-                train_pairs_df, image_pairs_test, kinematics_pairs_test, labels_test, test_pairs_d                                  
-                                                                                    
+        train_dataset = SiameseWindowDataset(image_data_train=image_pairs_train,
+                                             kinematics_data_train=kinematics_pairs_train, 
+                                             pairs_df=train_pairs_df,
+                                             image_data_test=None, #No test data for Siamese network training
+                                             kinematics_data_test=None,
+                                             train=True,
+                                             feature_standardization_dict=feature_standardization_dict)
+        
+        test_dataset = SiameseWindowDataset(image_data_train=image_pairs_test,
+                                            kinematics_data_train=kinematics_pairs_test, 
+                                            pairs_df=test_pairs_df,
+                                            image_data_test=image_test_data, 
+                                            kinematics_data_test=kinematics_test_data,
+                                            train=False,
+                                            feature_standardization_dict=feature_standardization_dict)
  
            
     else:
