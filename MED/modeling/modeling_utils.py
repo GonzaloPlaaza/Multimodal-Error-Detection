@@ -4,6 +4,8 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import f1_score, accuracy_score, roc_auc_score, jaccard_score, confusion_matrix
 import numpy as np
 
+from .models import CNN, LSTM, Siamese_CNN, Siamese_LSTM
+
 def train_single_epoch(model: torch.nn.Module, 
                        feature_extractor: torch.nn.Module,
                        train_dataloader: DataLoader,
@@ -179,3 +181,25 @@ def save_model(best_model: dict,
         }, model_path)
 
     print(f"Model saved to {model_path}")  
+
+
+def instantiate_model(model_name: str,
+                      in_features: int,
+                      window_size: int):
+    
+    if model_name == "SimpleCNN":
+        model = CNN(in_features=in_features, window_size=window_size)
+    
+    elif model_name == "LSTM":
+        model = LSTM(in_features=in_features, window_size=window_size)
+
+    elif model_name == "Siamese_CNN":
+        model = Siamese_CNN(in_features=in_features, window_size=window_size)
+    
+    elif model_name == "Siamese_LSTM":
+        model = Siamese_LSTM(in_features=in_features, window_size=window_size)
+    
+    else:
+        raise ValueError(f"Model {model_name} is not supported.")
+    
+    return model

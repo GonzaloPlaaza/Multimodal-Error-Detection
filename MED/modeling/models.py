@@ -154,35 +154,36 @@ class LSTM(nn.Module):
             lstm_out, _ = self.lstm3(lstm_out)
             n_features = lstm_out.shape[2] * lstm_out.shape[1]
 
-        self.flat = nn.Flatten()
-        self.drop = nn.Dropout(p=0.55)
-        self.linear1 = nn.Linear(n_features,960)
-        self.linear2 = nn.Linear(960,480)
-        self.linear3 = nn.Linear(480,16)
-        self.linear4 = nn.Linear(16,1)
+        self.linear_layers = nn.Sequential(nn.Flatten(),
+                                           nn.Linear(n_features,960),
+                                           nn.ReLU(),
+                                           nn.Dropout(p=0.55),
+                                           nn.Linear(960,480),
+                                           nn.ReLU(),
+                                           nn.Dropout(p=0.55),
+                                           nn.Linear(480,16),
+                                           nn.ReLU(),
+                                           nn.Linear(16,1))
         
         self.initialize_weights()
 
     def forward(self,l):
             
+        #LSTM 1
         l = l.transpose(1, 2).contiguous()
         lstm, _ = self.lstm1(l)
         lstm = F.relu(lstm)
         
+        #LSTM 2
         lstm, _ = self.lstm2(lstm)
         lstm = F.relu(lstm)
         
+        #LSTM 3
         lstm,_ = self.lstm3(lstm)
         lstm = F.relu(lstm)
-        lstm = self.flat(lstm)
-        
-        lstm = F.relu(self.linear1(lstm))
-        lstm= self.drop(lstm)
-        lstm = F.relu(self.linear2(lstm))
-        lstm= self.drop(lstm)
-        lstm = F.relu(self.linear3(lstm))
-        lstm = self.linear4(lstm)
-        
+
+        #Flatten and apply linear layers
+        lstm = self.linear_layers(lstm) 
         return lstm
     
     def initialize_weights(self):
@@ -194,3 +195,78 @@ class LSTM(nn.Module):
             elif isinstance(m,nn.Linear):
                 nn.init.xavier_normal_(m.weight)
                 nn.init.constant_(m.bias,0)
+
+
+class Siamese_CNN(nn.Module):
+    """
+    A Siamese Convolutional Neural Network (CNN) for processing image data.
+    This model consists in:
+    1. Two identical CNN convolutional branches that share weights.
+    2. The output from each branch is subtracted (and absolute value) to compute the similarity between the two inputs.
+    3. A final linear layer is applied to this output to produce the final prediction.
+
+    """
+
+    def __init__(self, window_size: int = 30):
+        super(Siamese_CNN, self).__init__()
+        self.name = "Siamese_CNN"
+        self.cnn_branch = CNN(window_size=window_size)
+        self.convolutional_layers = self.cnn_branch.convolutional_layers
+        self.linear_layers = self.cnn_branch.linear_layers
+
+    def forward(self, x1, x2):
+        out1 = self.cnn_branch(x1)
+        out2 = self.cnn_branch(x2)
+        
+        diff = torch.abs(out1 - out2)
+        output = self.linear_layers(diff)
+
+        return output
+    
+
+class Siamese_LSTM(nn.Module):
+    """
+    A Siamese Long Short-Term Memory (LSTM) network for processing sequential data.
+    This model consists in:
+    1. Two identical LSTM branches that share weights.
+    2. The output from each branch is subtracted (and absolute value) to compute the similarity between the two inputs.
+    3. A final linear layer is applied to this output to produce the final prediction.
+    
+    """
+
+    def __init__(self, in_features: int = 58, window_size: int = 30):
+        super(Siamese_LSTM, self).__init__()
+        self.name = "Siamese_LSTM"
+
+        self.lstm = LSTM(in_features=in_features, window_size=window_size)
+        self.lstm1 = self.lstm.lstm1
+        self.lstm2 = self.lstm.lstm2
+        self.lstm3 = self.lstm.lstm3
+        self.linear_layers = self.lstm_branch.linear_layers
+
+    def forward(self, x1, x2):
+        #LSTM 1
+        x1 = x1.transpose(1, 2).contiguous()
+        x2 = x2.transpose(1, 2).contiguous()
+        lstm_x1, _ = self.lstm1(x1)
+        lstm_x1 = F.relu(lstm_x1)
+        lstm_x2, _ = self.lstm1(x2)
+        lstm_x2 = F.relu(lstm_x2)
+        
+        #LSTM 2
+        lstm_x1, _ = self.lstm2(lstm_x1)
+        lstm_x1 = F.relu(lstm_x1)
+        lstm_x2, _ = self.lstm2(lstm_x2)
+        lstm_x2 = F.relu(lstm_x2)
+        
+        #LSTM 3
+        lstm_x1, _ = self.lstm3(lstm_x1)
+        lstm_x1 = F.relu(lstm_x1)
+        lstm_x2, _ = self.lstm3(lstm_x2)
+        lstm_x2 = F.relu(lstm_x2)
+
+        #Flatten and apply linear layers
+        out = torch.abs(lstm_x1 - lstm_x2)
+        output = self.linear_layers(out)
+
+        return output
