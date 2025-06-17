@@ -401,19 +401,17 @@ def retrieve_dataloaders(fold_data_path:str,
                                                                                                 train=False,
                                                                                                 exp_kwargs=exp_kwargs)
                                                                                             
-        train_dataset = SiameseWindowDataset(image_data_train=image_pairs_train,
-                                             kinematics_data_train=kinematics_pairs_train, 
-                                             pairs_df=train_pairs_df,
-                                             image_data_test=None, #No test data for Siamese network training
-                                             kinematics_data_test=None,
-                                             train=True,
-                                             feature_standardization_dict=feature_standardization_dict)
+        train_dataset = SiameseWindowDataset(image_data=image_pairs_train,
+                                            kinematics_data=kinematics_pairs_train, 
+                                            e_labels=labels_train,
+                                            pairs_df=train_pairs_df,
+                                            train=True,
+                                            feature_standardization_dict=feature_standardization_dict)
         
-        test_dataset = SiameseWindowDataset(image_data_train=image_pairs_test,
-                                            kinematics_data_train=kinematics_pairs_test, 
+        test_dataset = SiameseWindowDataset(image_data=image_pairs_test,
+                                            kinematics_data=kinematics_pairs_test, 
+                                            e_labels=labels_test,
                                             pairs_df=test_pairs_df,
-                                            image_data_test=image_test_data, 
-                                            kinematics_data_test=kinematics_test_data,
                                             train=False,
                                             feature_standardization_dict=feature_standardization_dict)
  

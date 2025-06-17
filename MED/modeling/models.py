@@ -48,7 +48,9 @@ class CNN(nn.Module):
     This model consists of two convolutional layers followed by fully connected layers.
     """
 
-    def __init__(self, window_size:int = 30):
+    def __init__(self, 
+                 in_features: int = 58, # 26 kinematic + 32 image features
+                 window_size:int = 30):
 
         super(CNN,self).__init__()
         
@@ -56,7 +58,7 @@ class CNN(nn.Module):
         self.window_size = window_size  
         if self.window_size == 10: #10 sample window limits convolutional layer size
             self.convolutional_layers = nn.Sequential(
-                nn.Conv1d(26 + 32, 64, kernel_size=3,stride=1),
+                nn.Conv1d(in_features, 64, kernel_size=3,stride=1),
                 nn.MaxPool1d(2,2),
                 nn.Dropout(p=0.2),
                 nn.BatchNorm1d(64),
@@ -207,21 +209,33 @@ class Siamese_CNN(nn.Module):
 
     """
 
-    def __init__(self, window_size: int = 30):
+    def __init__(self,
+                 in_features: int = 58,
+                  window_size: int = 30):
         super(Siamese_CNN, self).__init__()
         self.name = "Siamese_CNN"
-        self.cnn_branch = CNN(window_size=window_size)
+        self.cnn_branch = CNN(window_size=window_size, in_features=in_features)
         self.convolutional_layers = self.cnn_branch.convolutional_layers
         self.linear_layers = self.cnn_branch.linear_layers
 
     def forward(self, x1, x2):
-        out1 = self.cnn_branch(x1)
-        out2 = self.cnn_branch(x2)
+        out1 = self.convolutional_layers(x1)   
+        out2 = self.convolutional_layers(x2)
         
         diff = torch.abs(out1 - out2)
         output = self.linear_layers(diff)
 
         return output
+    
+    def initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.kaiming_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                nn.init.constant_(m.bias, 0)
     
 
 class Siamese_LSTM(nn.Module):
@@ -242,7 +256,7 @@ class Siamese_LSTM(nn.Module):
         self.lstm1 = self.lstm.lstm1
         self.lstm2 = self.lstm.lstm2
         self.lstm3 = self.lstm.lstm3
-        self.linear_layers = self.lstm_branch.linear_layers
+        self.linear_layers = self.lstm.linear_layers
 
     def forward(self, x1, x2):
         #LSTM 1
@@ -270,3 +284,13 @@ class Siamese_LSTM(nn.Module):
         output = self.linear_layers(out)
 
         return output
+    
+    def initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.kaiming_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                nn.init.constant_(m.bias, 0)
