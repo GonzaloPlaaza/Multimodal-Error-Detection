@@ -6,8 +6,7 @@ import torch.nn.functional as F
 class FeatureExtractor(nn.Module):
     
     """
-    A simple feature extractor (MLP) that applies a linear transformation to the input data.
-    This is used to extract features from the image data before passing it to the CNN.
+    A simple feature extractor (MLP) applied to the input video data.
     """
 
     def __init__(self, 
@@ -21,11 +20,16 @@ class FeatureExtractor(nn.Module):
         for i in range(len(hidden_dims)):
             if i == 0:
                 self.linear.add_module(f'linear_{i}', nn.Linear(input_dim, hidden_dims[i]))
+                #self.linear.add_module(f'layer_norm_{i}', nn.LayerNorm(hidden_dims[i]))
+                self.linear.add_module(f'relu_{i}', nn.ReLU())                
             
             else:
                 self.linear.add_module(f'linear_{i}', nn.Linear(hidden_dims[i-1], hidden_dims[i]))
+                #self.linear.add_module(f'layer_norm_{i}', nn.LayerNorm(hidden_dims[i]))
+                self.linear.add_module(f'relu_{i}', nn.ReLU())
         
         self.linear.add_module('output', nn.Linear(hidden_dims[-1], output_dim))
+        self.initialize_weights()
     
     def forward(self, x):
         return self.linear(x)
@@ -50,15 +54,16 @@ class CNN(nn.Module):
 
     def __init__(self, 
                  in_features: int = 58, # 26 kinematic + 32 image features
-                 window_size:int = 30):
+                 window_size: int = 30):
 
         super(CNN,self).__init__()
         
         self.name = "SimpleCNN"
-        self.window_size = window_size  
+        self.window_size = window_size 
+        self.in_features = in_features 
         if self.window_size == 10: #10 sample window limits convolutional layer size
             self.convolutional_layers = nn.Sequential(
-                nn.Conv1d(in_features, 64, kernel_size=3,stride=1),
+                nn.Conv1d(self.in_features, 64, kernel_size=3, stride=1),
                 nn.MaxPool1d(2,2),
                 nn.Dropout(p=0.2),
                 nn.BatchNorm1d(64),
@@ -70,7 +75,7 @@ class CNN(nn.Module):
         
         elif self.window_size == 30: #30 sample window allows more depth in convolutional layers
             self.convolutional_layers = nn.Sequential(
-                nn.Conv1d(26 + 32, 64, kernel_size=3,stride=1),
+                nn.Conv1d(self.in_features, 64, kernel_size=3,stride=1),
                 nn.MaxPool1d(2,2),
                 nn.Dropout(p=0.2),
                 nn.BatchNorm1d(64),
@@ -88,7 +93,7 @@ class CNN(nn.Module):
         #Compute output size
         with torch.no_grad():
             self.convolutional_layers.eval()
-            dummy_input = torch.zeros(1, 58, self.window_size)
+            dummy_input = torch.zeros(1, self.in_features, self.window_size)
             n_features = self.convolutional_layers(dummy_input).shape[1]
 
         
@@ -104,7 +109,6 @@ class CNN(nn.Module):
             nn.Linear(16,1))
 
         self.initialize_weights()
-        
     
     def forward(self, x):
 
@@ -135,37 +139,46 @@ class LSTM(nn.Module):
     
     def __init__(self,
                  in_features: int = 58,
-                 window_size: int = 30):
+                 window_size: int = 30,
+                 num_layers: int = 3,
+                 hidden_size: int = 128):
         
         super(LSTM, self).__init__()
         self.name = "SimpleLSTM"
         self.window_size = window_size
         self.in_features = in_features
+        self.layer_dim = num_layers
+        self.hidden_size = hidden_size
        
-        self.layer_dim =1
-        self.lstm1 = nn.LSTM(self.in_features, 512, dropout=0, num_layers=self.layer_dim,batch_first=True)
-        self.lstm2 = nn.LSTM(512, 128, dropout=0, num_layers=self.layer_dim,batch_first=True)
-        self.lstm3 = nn.LSTM(128, 64, dropout=0, num_layers=self.layer_dim,batch_first=True)
+        #self.lstm1 = nn.LSTM(self.in_features, 512, dropout=0, num_layers=self.layer_dim,batch_first=True)
+        #self.lstm2 = nn.LSTM(512, 128, dropout=0, num_layers=self.layer_dim,batch_first=True)
+        #self.lstm3 = nn.LSTM(128, 64, dropout=0, num_layers=self.layer_dim,batch_first=True)
+
+        self.lstm = nn.LSTM(input_size=self.in_features, hidden_size=self.hidden_size, num_layers=self.layer_dim, batch_first=True, dropout=0.2)
 
         #Compute output size
         with torch.no_grad():
-            self.lstm1.eval()
+            self.lstm.eval()
             dummy_input = torch.zeros(1, self.window_size, self.in_features)
+            """
             lstm_out, _ = self.lstm1(dummy_input)
             lstm_out, _ = self.lstm2(lstm_out)
             lstm_out, _ = self.lstm3(lstm_out)
-            n_features = lstm_out.shape[2] * lstm_out.shape[1]
+            """
+            lstm_out, _ = self.lstm(dummy_input)
+            # Flatten the output to get the number of features
+            lstm_out = lstm_out[:, -1, :]  # Get the last time step output
+            n_features = lstm_out.shape[1]
+            print(n_features)
 
         self.linear_layers = nn.Sequential(nn.Flatten(),
-                                           nn.Linear(n_features,960),
-                                           nn.ReLU(),
-                                           nn.Dropout(p=0.55),
-                                           nn.Linear(960,480),
-                                           nn.ReLU(),
-                                           nn.Dropout(p=0.55),
-                                           nn.Linear(480,16),
-                                           nn.ReLU(),
-                                           nn.Linear(16,1))
+                                           nn.Linear(n_features, 256),
+                                            nn.ReLU(),
+                                            nn.BatchNorm1d(256),
+                                            nn.Linear(256, 64),
+                                            nn.ReLU(),
+                                            nn.BatchNorm1d(64),
+                                            nn.Linear(64, 1))
         
         self.initialize_weights()
 
@@ -173,6 +186,7 @@ class LSTM(nn.Module):
             
         #LSTM 1
         l = l.transpose(1, 2).contiguous()
+        """
         lstm, _ = self.lstm1(l)
         lstm = F.relu(lstm)
         
@@ -183,9 +197,13 @@ class LSTM(nn.Module):
         #LSTM 3
         lstm,_ = self.lstm3(lstm)
         lstm = F.relu(lstm)
+        """
+        out, _ = self.lstm(l)
+        out = F.relu(out)
+        out = out[:, -1, :]  # Get the last time step output
 
         #Flatten and apply linear layers
-        lstm = self.linear_layers(lstm) 
+        lstm = self.linear_layers(out) 
         return lstm
     
     def initialize_weights(self):
@@ -217,6 +235,8 @@ class Siamese_CNN(nn.Module):
         self.cnn_branch = CNN(window_size=window_size, in_features=in_features)
         self.convolutional_layers = self.cnn_branch.convolutional_layers
         self.linear_layers = self.cnn_branch.linear_layers
+
+        self.initialize_weights()
 
     def forward(self, x1, x2):
         out1 = self.convolutional_layers(x1)   
@@ -253,31 +273,24 @@ class Siamese_LSTM(nn.Module):
         self.name = "Siamese_LSTM"
 
         self.lstm = LSTM(in_features=in_features, window_size=window_size)
-        self.lstm1 = self.lstm.lstm1
-        self.lstm2 = self.lstm.lstm2
-        self.lstm3 = self.lstm.lstm3
+        self.lstm1 = self.lstm.lstm
         self.linear_layers = self.lstm.linear_layers
+
+        self.initialize_weights()
 
     def forward(self, x1, x2):
         #LSTM 1
         x1 = x1.transpose(1, 2).contiguous()
         x2 = x2.transpose(1, 2).contiguous()
         lstm_x1, _ = self.lstm1(x1)
-        lstm_x1 = F.relu(lstm_x1)
         lstm_x2, _ = self.lstm1(x2)
-        lstm_x2 = F.relu(lstm_x2)
-        
-        #LSTM 2
-        lstm_x1, _ = self.lstm2(lstm_x1)
+
         lstm_x1 = F.relu(lstm_x1)
-        lstm_x2, _ = self.lstm2(lstm_x2)
         lstm_x2 = F.relu(lstm_x2)
-        
-        #LSTM 3
-        lstm_x1, _ = self.lstm3(lstm_x1)
-        lstm_x1 = F.relu(lstm_x1)
-        lstm_x2, _ = self.lstm3(lstm_x2)
-        lstm_x2 = F.relu(lstm_x2)
+
+        #Get the last time step output
+        lstm_x1 = lstm_x1[:, -1, :]
+        lstm_x2 = lstm_x2[:, -1, :]
 
         #Flatten and apply linear layers
         out = torch.abs(lstm_x1 - lstm_x2)

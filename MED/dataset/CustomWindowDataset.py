@@ -28,16 +28,20 @@ class CustomWindowDataset(Dataset):
                  #trial_data, 
                  subject_data,
                  feature_standardization_dict={}):
-
+        
         self.image_data = image_data
         self.kinematics_data = kinematics_data
         self.g_labels_data = g_labels_data
         self.e_labels_data = e_labels_data
         self.subject_data = subject_data
-        self.feature_standardization_dict = feature_standardization_dict    
+        self.feature_standardization_dict = feature_standardization_dict  
         #self.task_data = task_data
         #self.trial_data = trial_data
-    
+
+        #Compute error class balance
+        self.binary_error_distribution = (1 - self.e_labels_data[:, -1].sum() / len(self.e_labels_data), 
+                                          self.e_labels_data[:, -1].sum() / len(self.e_labels_data))
+
     def __len__(self):
         return len(self.image_data)
     
@@ -45,12 +49,13 @@ class CustomWindowDataset(Dataset):
         
         image = self.image_data[idx]
         kinematics = self.kinematics_data[idx]
-
+        
         for key, value in self.feature_standardization_dict.items():
             if key == 'image':
                 image = (image - value['mean']) / value['std']
             elif key == 'kinematics':
-                kinematics = (kinematics - value['mean']) / value['std']
+                kinematics = (kinematics - value['mean']) / value['std']  
+                
         
         g_labels = self.g_labels_data[idx]
         e_labels = self.e_labels_data[idx]

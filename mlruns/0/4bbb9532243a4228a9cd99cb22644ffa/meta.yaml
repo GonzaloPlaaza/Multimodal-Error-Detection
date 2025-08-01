@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/gonzaloplazaarriola/Desktop/Medtronic/TFM/Multimodal-Error-Detection/mlruns/0/4bbb9532243a4228a9cd99cb22644ffa/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 4bbb9532243a4228a9cd99cb22644ffa
+run_name: judicious-shrew-243
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1751881986561
+status: 1
+tags: []
+user_id: gonzaloplazaarriola

@@ -1,0 +1,10 @@
+artifact_location: file:///Users/gonzaloplazaarriola/Desktop/Medtronic/TFM/Multimodal-Error-Detection/mlruns/0/models/m-c95a1384efa449a088406df8595cf4f7/artifacts
+creation_timestamp: 1751882194438
+experiment_id: '0'
+last_updated_timestamp: 1751882196424
+model_id: m-c95a1384efa449a088406df8595cf4f7
+model_type: null
+name: feature_extractor_LOSO_1out
+source_run_id: 5aa60722d1a14ef79a352fe4a3b8934e
+status: 2
+status_message: null

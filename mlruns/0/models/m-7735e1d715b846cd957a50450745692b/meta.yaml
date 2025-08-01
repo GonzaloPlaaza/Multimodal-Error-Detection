@@ -1,0 +1,10 @@
+artifact_location: file:///Users/gonzaloplazaarriola/Desktop/Medtronic/TFM/Multimodal-Error-Detection/mlruns/0/models/m-7735e1d715b846cd957a50450745692b/artifacts
+creation_timestamp: 1751882063335
+experiment_id: '0'
+last_updated_timestamp: 1751882065111
+model_id: m-7735e1d715b846cd957a50450745692b
+model_type: null
+name: model_LOSO_4out
+source_run_id: 4bbb9532243a4228a9cd99cb22644ffa
+status: 2
+status_message: null

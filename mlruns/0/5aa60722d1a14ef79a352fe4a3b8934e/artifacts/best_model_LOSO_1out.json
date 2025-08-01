@@ -1,0 +1,31 @@
+{
+  "epoch": 1,
+  "train_f1_fold": 0.05383699975735125,
+  "test_f1_fold": 0.0,
+  "train_acc_fold": 0.5097936764049895,
+  "test_acc_fold": 0.40438522354255174,
+  "train_auc_roc_fold": 0.493075068845658,
+  "test_auc_roc_fold": 0.5318442966098467,
+  "train_jaccard_fold": 0.028394095715528204,
+  "test_jaccard_fold": 0.0,
+  "train_cm_fold": [
+    [
+      36043,
+      1950
+    ],
+    [
+      37433,
+      1111
+    ]
+  ],
+  "test_cm_fold": [
+    [
+      8657,
+      0
+    ],
+    [
+      16337,
+      0
+    ]
+  ]
+}

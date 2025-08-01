@@ -1,0 +1,23 @@
+artifact_path: file:///Users/gonzaloplazaarriola/Desktop/Medtronic/TFM/Multimodal-Error-Detection/mlruns/0/models/m-f0df2093d1c44b218a1fcc5e1a31b8fc/artifacts
+flavors:
+  python_function:
+    config:
+      device: null
+    data: data
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.pytorch
+    pickle_module_name: mlflow.pytorch.pickle_module
+    python_version: 3.11.8
+  pytorch:
+    code: null
+    model_data: data
+    pytorch_version: 2.6.0
+mlflow_version: 3.1.0
+model_id: m-f0df2093d1c44b218a1fcc5e1a31b8fc
+model_size_bytes: 4758416
+model_uuid: m-f0df2093d1c44b218a1fcc5e1a31b8fc
+prompts: null
+run_id: 260f98ee79b849c9af6723e0dfb54b7d
+utc_time_created: '2025-07-07 11:10:12.214510'

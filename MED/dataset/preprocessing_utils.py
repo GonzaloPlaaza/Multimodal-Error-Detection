@@ -39,8 +39,6 @@ def convert_videos_to_frames(video_folder, output_folder, frequency=30):
         raise ValueError("Frequency must be between 1 and 30 Hz.")
 
     for filename in os.listdir(video_folder):
-
-
     
         if filename.endswith('.avi') and "capture2" in filename:
             print(f"Processing {filename}...")
@@ -81,7 +79,6 @@ def convert_videos_to_frames(video_folder, output_folder, frequency=30):
                 frame = frame[start_y:start_y + 224, start_x:start_x + 224]
 
                 cv2.imwrite(frame_path, frame)
-                print(f"Saved frame {frame_count} to {frame_path}")
                 frame_count += 1
 
             video_capture.release()
@@ -399,7 +396,11 @@ def process_errors(folder_errors,
                     if task_type == "NP":
                         column_title = 'name'
                         #Delete 'Needle_Passing' from trial_name if it exists
-                        trial_name = trial_name.replace('Needle_Passing', 'NeedlePassing') 
+                        if error_name != 'attempts':
+                            trial_name = trial_name.replace('Needle_Passing', 'NeedlePassing')
+                        
+                        else:
+                            trial_name = trial_name.replace('NeedlePassing', 'Needle_Passing')
                     
                     elif task_type == "S":
                         column_title = 'files'
@@ -410,7 +411,6 @@ def process_errors(folder_errors,
                     #where error_data['name'] is trial (Needle_Passing_B001) + _startframe + _endframe + .avi
                     for name in name_column:
 
-                        #Check if trial_name is in the name
                         if trial_name in name:
 
                             if task_type == "NP":
@@ -705,7 +705,8 @@ def image_transform(mean, std):
         ])
 
 def create_pkl_files(image_folder, kinematics_folder, gestures_folder, errors_folder, output_folder, task_type, device,
-                     folds = ['1Out', '2Out', '3Out', '4Out', '5Out']):
+                     folds = ['1Out', '2Out', '3Out', '4Out', '5Out'],
+                     raw: bool = False):
     '''
     This function creates a .pkl file for each trial in the output folder.
     The .pkl file contains the image frames, kinematics data, gesture labels, error labels, and frame numbers.
@@ -719,25 +720,29 @@ def create_pkl_files(image_folder, kinematics_folder, gestures_folder, errors_fo
     #Before processing the files, let us load all the fine-tuned ResNet50 models for each fold and define the transforms.
 
     #1. Load models and transforms
-    model_dict = {}
-    transform_dict = {}
-    for fold in folds:
-        #a. Load the fine-tuned ResNet50 model for the specific fold
-        model_path = f"../models/ResNet50/{fold}.pth"
-        if not os.path.exists(model_path):
-            print(f"Model {model_path} does not exist. Skipping fold {fold}.")
-            continue
-        
-        model = models.resnet50(pretrained=False)
-        model.fc = nn.Linear(in_features=2048, out_features=1)
-        model.load_state_dict(torch.load(model_path))
-        model.fc = torch.nn.Identity() #Delete last layer
-        model_dict[fold] = model #Save in dictionary
+    if not raw:
+        """
+        model_dict = {}
+        transform_dict = {}
+        for fold in folds:
+            #a. Load the fine-tuned ResNet50 model for the specific fold
+            model_path = f"../models/ResNet50/{fold}.pth"
+            if not os.path.exists(model_path):
+                print(f"Model {model_path} does not exist. Skipping fold {fold}.")
+                continue
+            
+            model = models.resnet50(pretrained=False)
+            model.fc = nn.Linear(in_features=2048, out_features=1)
+            model.load_state_dict(torch.load(model_path))
+            model.fc = torch.nn.Identity() #Delete last layer
+            model.eval()
+            model_dict[fold] = model #Save in dictionary
 
-        #b. Define the transforms for the images
-        mean_fold = torch.load(os.path.join(output_folder, f"{fold}/mean.pth"))
-        std_fold = torch.load(os.path.join(output_folder, f"{fold}/std.pth"))
-        transform_dict[fold] = image_transform(mean=mean_fold, std=std_fold)
+            #b. Define the transforms for the images
+            mean_fold = torch.load(os.path.join(output_folder, f"{fold}/mean.pth"))
+            std_fold = torch.load(os.path.join(output_folder, f"{fold}/std.pth"))
+            transform_dict[fold] = image_transform(mean=mean_fold, std=std_fold)
+            """
 
     #2. Process files
     for filename in os.listdir(image_folder):
@@ -756,6 +761,7 @@ def create_pkl_files(image_folder, kinematics_folder, gestures_folder, errors_fo
         #2.a. Load all data
         #i. Load image frames
         image_frames_folder = os.path.join(image_folder, filename)
+        """
         image_frames = []
         for frame_file in sorted(os.listdir(image_frames_folder)):
             if frame_file.endswith('.png'):
@@ -767,7 +773,9 @@ def create_pkl_files(image_folder, kinematics_folder, gestures_folder, errors_fo
         image_feats = torch.tensor(image_frames, dtype=torch.float32).permute(0, 3, 1, 2)  # Convert to (N, C, H, W) format
         if image_feats.shape[1:] != (3, 224, 224):
                 print(f"Warning: Image frames in {trial_name} do not have the expected shape (3, 224, 224). Found shape {image_feats.shape[1:]}.")
-    
+
+        """
+        image_feats = []
         #ii. Load kinematics data
         kinematics_file = os.path.join(kinematics_folder, f"{trial_name}.csv")
         kinematics_data = pd.read_csv(kinematics_file)
@@ -796,27 +804,46 @@ def create_pkl_files(image_folder, kinematics_folder, gestures_folder, errors_fo
         #v.Get frame numbers
         frames = kinematics_data['frame'].values
 
-        #3. Process images and save .pkl for each fold
-        for fold, model in model_dict.items():  
-            
-            final_images = torch.empty(image_feats.shape[0], 2048)
-            model.eval()
-            model.to(device)
-            
-            #Transform the images
-            transform = transform_dict[fold]
-            image_feats_transformed = transform(image_feats)
+        if not raw: 
+            #3. Process images and save .pkl for each fold
+            for fold in folds:
+                """
+                final_images = torch.empty(image_feats.shape[0], 2048)
+                model.to(device)
+                
+                #Transform the images
+                transform = transform_dict[fold]
+                image_feats_transformed = transform(image_feats)
 
-            #Pass the images through the model
-            with torch.no_grad():
-                for i in range(0, image_feats_transformed.shape[0], 32):
-                    batch = image_feats_transformed[i:i+32].to(device)
-                    feats = model(batch)
-                    final_images[i:i+32] = feats.cpu()
+                #Pass the images through the model
+                with torch.no_grad():
+                    for i in range(0, image_feats_transformed.shape[0], 32):
+                        batch = image_feats_transformed[i:i+32].to(device)
+                        feats = model(batch)
+                        final_images[i:i+32] = feats.cpu()
+                
+                """
+                final_images = []
+                #Create a dictionary with the data
+                data_dict = {
+                    'image_feats': final_images,
+                    'kinematics_feats': kinematics_feats,
+                    'g_labels': g_labels,
+                    'e_labels': e_labels,
+                    'frames': frames
+                }
 
-            #Create a dictionary with the data
+                #Save the dictionary as a .pkl file
+                output_path = os.path.join(output_folder, fold, f"{trial_name}.pkl")
+                with open(output_path, 'wb') as f:
+                    pickle.dump(data_dict, f)
+
+                torch.mps.empty_cache()
+
+        else:
+            #3. Save raw data without processing
             data_dict = {
-                'image_feats': final_images,
+                'image_feats': image_feats,
                 'kinematics_feats': kinematics_feats,
                 'g_labels': g_labels,
                 'e_labels': e_labels,
@@ -824,10 +851,8 @@ def create_pkl_files(image_folder, kinematics_folder, gestures_folder, errors_fo
             }
 
             #Save the dictionary as a .pkl file
-            output_path = os.path.join(output_folder, fold, f"{trial_name}.pkl")
+            output_path = os.path.join(output_folder, f"{trial_name}.pkl")
             with open(output_path, 'wb') as f:
                 pickle.dump(data_dict, f)
 
-            torch.mps.empty_cache()
-    
     print("All .pkl files created.")
