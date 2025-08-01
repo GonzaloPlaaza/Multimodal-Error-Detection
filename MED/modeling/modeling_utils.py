@@ -903,7 +903,9 @@ def train_single_epoch_COG(model: torch.nn.Module,
     
     train_all_scores = []
     train_all_preds = []
+    train_all_preds_binary = []
     train_all_labels = []
+    train_all_labels_binary = []
     train_loss = 0.0
 
     for i, batch in enumerate(tqdm.tqdm(train_dataloader, 
@@ -914,9 +916,18 @@ def train_single_epoch_COG(model: torch.nn.Module,
         images, kinematics, g_labels, e_labels, subject = batch
         g_labels = g_labels.to(device).float()
         e_labels_specific = define_error_labels(e_labels = e_labels, exp_kwargs=exp_kwargs)
-        e_labels_specific = e_labels_specific.to(device).float() 
-        e_labels_specific = e_labels_specific.view(-1,)  #Ensure e_labels is of shape (n_frames,)
-        
+        e_labels_specific = e_labels_specific.to(device).float()
+
+        if exp_kwargs['error_type'] == "global":
+            e_labels_specific = e_labels_specific.view(-1,)  #Ensure e_labels is of shape (n_frames,)
+
+        else: #specific error prediction (6 classes for CE loss)
+            e_labels_specific = torch.argmax(e_labels_specific, dim=1)  #Convert to class labels (0-5) for CE loss
+
+        if i == 0 or i == 20:
+            print(e_labels_specific.shape)
+            print("Labels unique classes:", torch.unique(e_labels_specific))
+
         inputs = define_inputs(images=images,
                                kinematics=kinematics,
                                feature_extractor=feature_extractor,
@@ -930,6 +941,7 @@ def train_single_epoch_COG(model: torch.nn.Module,
         
         for p, l in zip(resize_list, labels_list):
             p_classes = p.squeeze(0).transpose(1,0)
+            print(p_classes.shape, l.shape)
             ce_loss = criterion(p_classes.squeeze(), l)
             sm_loss = torch.mean(torch.clamp(criterion2(F.log_softmax(p_classes[1:, :], dim=1), F.log_softmax(p_classes.detach()[:-1, :], dim=1)), min=0, max=16))
             #sm_loss is smooth because it is the difference between the log of the softmax of the next frame 
@@ -949,10 +961,20 @@ def train_single_epoch_COG(model: torch.nn.Module,
         loss.backward()
         optimizer.step()
 
-        for j in range(len(train_p_classes_positive)):
-            train_all_scores.append(float(train_p_classes_positive.data[j]))
+        #Record probabilities if error_type is global
+        if exp_kwargs['error_type'] == "global":
+            for j in range(len(train_p_classes_positive)):
+                train_all_scores.append(float(train_p_classes_positive.data[j]))
+        
         for index in range(len(preds)):
             train_all_preds.append(int(preds.data[index]))
+
+        #Record binary predictions if error_type is all_errors
+        if exp_kwargs['error_type'] == "all_errors":
+            for index in range(len(preds)):
+                train_all_preds_binary.append(int(preds.data[index, 0])) #No error class is the first class (0). Therefore, we are recording the binary prediction (0 or 1) for no error.
+                train_all_labels_binary.append(int(e_labels_specific.data[index, 0])) #No error class is the first class (0). Therefore, we are recording the binary label (0 or 1) for no error.
+
         for index in range(len(e_labels_specific)):
             train_all_labels.append(int(e_labels_specific.data[index]))
 
@@ -962,16 +984,29 @@ def train_single_epoch_COG(model: torch.nn.Module,
         scheduler.step()
 
     train_average_loss = float(train_loss) / len(train_dataloader)
-    train_jaccard = jaccard_score(train_all_labels, train_all_preds, average='binary', pos_label=1)
-    train_f1 = f1_score(train_all_labels, train_all_preds, average='binary', pos_label=1)
-    train_f1_weighted = f1_score(train_all_labels, train_all_preds, average='weighted')
-    train_acc = accuracy_score(train_all_labels, train_all_preds)
-    train_cm = confusion_matrix(train_all_labels, train_all_preds)
+    
+    #Binary metrics for global error prediction
+    if exp_kwargs['error_type'] == "global":
+        train_jaccard = jaccard_score(train_all_labels, train_all_preds, average='binary', pos_label=1)
+        train_f1 = f1_score(train_all_labels, train_all_preds, average='binary', pos_label=1)
+        train_f1_weighted = f1_score(train_all_labels, train_all_preds, average='weighted')
+        train_acc = accuracy_score(train_all_labels, train_all_preds)
+        train_cm = confusion_matrix(train_all_labels, train_all_preds)
 
+        return train_average_loss, train_f1, train_f1_weighted, train_acc, train_jaccard, train_cm
+        
+    else: #Specific error prediction (6 classes) --> use weighted metrics
+        train_f1_binary = f1_score(train_all_labels_binary, train_all_preds_binary, average='binary', pos_label=0)
+        train_jaccard_binary = jaccard_score(train_all_labels_binary, train_all_preds_binary, average='binary', pos_label=0)
+        train_accuracy_binary = accuracy_score(train_all_labels_binary, train_all_preds_binary)
+        train_cm_binary = confusion_matrix(train_all_labels_binary, train_all_preds_binary)
 
-    return train_average_loss, train_f1, train_f1_weighted, train_acc, train_jaccard, train_cm
-
-
+        train_f1 = f1_score(train_all_labels, train_all_preds, average='weighted')
+        train_jaccard = jaccard_score(train_all_labels, train_all_preds, average='weighted')
+        train_accuracy = accuracy_score(train_all_labels, train_all_preds)
+        train_cm = confusion_matrix(train_all_labels, train_all_preds)
+        
+        return train_average_loss, train_f1_binary, train_f1, train_accuracy_binary, train_accuracy, train_jaccard_binary, train_jaccard, train_cm_binary, train_cm
 
 def validate_single_epoch_COG(model: torch.nn.Module,   
                             feature_extractor: torch.nn.Module,
