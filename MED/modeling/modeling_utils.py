@@ -181,11 +181,11 @@ def define_error_labels(e_labels: torch.Tensor, exp_kwargs: dict) -> torch.Tenso
         
         if exp_kwargs['dataset_type'] == "window":
             #Extract the specific error labels based on the error type
-            e_labels_specific = e_labels[:, error_position] if error_position >= 0 else e_labels[:, -1]
+            e_labels_specific = e_labels[:, error_position]
         
         elif exp_kwargs['dataset_type'] == "frame":
             #Extract the specific error labels based on the error type
-            e_labels_specific = e_labels[:, :, error_position] if error_position >= 0 else e_labels[:, :, -1]         
+            e_labels_specific = e_labels[:, :, error_position] 
 
     return e_labels_specific
 
@@ -724,7 +724,7 @@ def train_single_epoch_TSVN(model: torch.nn.Module,
                                         )):
         
         #images, kinematics, g_labels, e_labels, task, trial, subject = batch
-        images, kinematics, g_labels, e_labels, subject = batch
+        images, kinematics, g_labels, e_labels, subject, skill_level = batch
         g_labels = g_labels.to(device).float()
         e_labels_specific = define_error_labels(e_labels = e_labels, exp_kwargs=exp_kwargs)
         e_labels = e_labels_specific.to(device).float()
@@ -815,7 +815,7 @@ def validate_single_epoch_TSVN(model: torch.nn.Module,
 
     with torch.no_grad():
         for batch in tqdm.tqdm(test_dataloader, desc="Test"):
-            images, kinematics, g_labels, e_labels, subject = batch
+            images, kinematics, g_labels, e_labels, subject, skill_level = batch
             g_labels = g_labels.to(device).float()
             g_labels = g_labels.squeeze(0)  #Remove the extra dimension for frame classification
             e_labels_specific = define_error_labels(e_labels = e_labels, exp_kwargs=exp_kwargs)
@@ -913,7 +913,7 @@ def train_single_epoch_COG(model: torch.nn.Module,
                                         )):
         
         #images, kinematics, g_labels, e_labels, task, trial, subject = batch
-        images, kinematics, g_labels, e_labels, subject = batch
+        images, kinematics, g_labels, e_labels, subject, skill_level = batch
         g_labels = g_labels.to(device).float()
         e_labels_specific = define_error_labels(e_labels = e_labels, exp_kwargs=exp_kwargs)
         e_labels_specific = e_labels_specific.to(device).float()
@@ -922,11 +922,8 @@ def train_single_epoch_COG(model: torch.nn.Module,
             e_labels_specific = e_labels_specific.view(-1,)  #Ensure e_labels is of shape (n_frames,)
 
         else: #specific error prediction (6 classes for CE loss)
-            e_labels_specific = torch.argmax(e_labels_specific, dim=1)  #Convert to class labels (0-5) for CE loss
-
-        if i == 0 or i == 20:
-            print(e_labels_specific.shape)
-            print("Labels unique classes:", torch.unique(e_labels_specific))
+            e_labels_specific = torch.argmax(e_labels_specific, dim=2)  #Convert to class labels (0-5) for CE loss
+            e_labels_specific = e_labels_specific.view(-1,)
 
         inputs = define_inputs(images=images,
                                kinematics=kinematics,
@@ -941,7 +938,6 @@ def train_single_epoch_COG(model: torch.nn.Module,
         
         for p, l in zip(resize_list, labels_list):
             p_classes = p.squeeze(0).transpose(1,0)
-            print(p_classes.shape, l.shape)
             ce_loss = criterion(p_classes.squeeze(), l)
             sm_loss = torch.mean(torch.clamp(criterion2(F.log_softmax(p_classes[1:, :], dim=1), F.log_softmax(p_classes.detach()[:-1, :], dim=1)), min=0, max=16))
             #sm_loss is smooth because it is the difference between the log of the softmax of the next frame 
@@ -966,17 +962,32 @@ def train_single_epoch_COG(model: torch.nn.Module,
             for j in range(len(train_p_classes_positive)):
                 train_all_scores.append(float(train_p_classes_positive.data[j]))
         
-        for index in range(len(preds)):
-            train_all_preds.append(int(preds.data[index]))
+            for index in range(len(preds)):
+                train_all_preds.append(int(preds.data[index]))
+
+            for index in range(len(e_labels_specific)):
+                train_all_labels.append(int(e_labels_specific.data[index]))
 
         #Record binary predictions if error_type is all_errors
         if exp_kwargs['error_type'] == "all_errors":
+            
             for index in range(len(preds)):
-                train_all_preds_binary.append(int(preds.data[index, 0])) #No error class is the first class (0). Therefore, we are recording the binary prediction (0 or 1) for no error.
-                train_all_labels_binary.append(int(e_labels_specific.data[index, 0])) #No error class is the first class (0). Therefore, we are recording the binary label (0 or 1) for no error.
 
-        for index in range(len(e_labels_specific)):
-            train_all_labels.append(int(e_labels_specific.data[index]))
+                pred = preds.data[index]
+                label = e_labels_specific.data[index]
+                train_all_preds.append(int(pred)) #No error class is the first class (0). Therefore, we are recording the binary prediction (0 or 1) for no error.
+                train_all_labels.append(int(label)) #No error class is the first class (0). Therefore, we are recording the binary label (0 or 1) for no error.
+                
+                if label.sum() > 0:
+                    train_all_labels_binary.append(1) #If the label is not zero, it means there is an error
+                else:
+                    train_all_labels_binary.append(0)
+                
+                if pred.sum() > 0:
+                    train_all_preds_binary.append(1)
+                else:
+                    train_all_preds_binary.append(0)
+        
 
         train_loss += loss.data.item()
 
@@ -996,8 +1007,8 @@ def train_single_epoch_COG(model: torch.nn.Module,
         return train_average_loss, train_f1, train_f1_weighted, train_acc, train_jaccard, train_cm
         
     else: #Specific error prediction (6 classes) --> use weighted metrics
-        train_f1_binary = f1_score(train_all_labels_binary, train_all_preds_binary, average='binary', pos_label=0)
-        train_jaccard_binary = jaccard_score(train_all_labels_binary, train_all_preds_binary, average='binary', pos_label=0)
+        train_f1_binary = f1_score(train_all_labels_binary, train_all_preds_binary, average='binary', pos_label=1)
+        train_jaccard_binary = jaccard_score(train_all_labels_binary, train_all_preds_binary, average='binary', pos_label=1)
         train_accuracy_binary = accuracy_score(train_all_labels_binary, train_all_preds_binary)
         train_cm_binary = confusion_matrix(train_all_labels_binary, train_all_preds_binary)
 
@@ -1041,7 +1052,9 @@ def validate_single_epoch_COG(model: torch.nn.Module,
 
     test_all_probs = []
     test_all_preds = []
+    test_all_preds_binary = []
     test_all_labels = []
+    test_all_labels_binary = []
     test_all_labels_specific = []
     test_all_gest_labels = []
     test_all_subjects = []
@@ -1058,12 +1071,19 @@ def validate_single_epoch_COG(model: torch.nn.Module,
                                         )):
             
             #images, kinematics, g_labels, e_labels, task, trial, subject = batch
-            images, kinematics, g_labels, e_labels, subject = batch
+            images, kinematics, g_labels, e_labels, subject, skill_level = batch
             g_labels = g_labels.to(device).float()
             g_labels = g_labels.squeeze(0)  #Remove the extra dimension for frame classification
             e_labels_specific = define_error_labels(e_labels = e_labels, exp_kwargs=exp_kwargs)
             e_labels_specific = e_labels_specific.to(device).float()
-            e_labels_specific = e_labels_specific.view(-1,)  #Ensure e_labels is of shape (n_frames,)
+
+            if exp_kwargs['error_type'] == "global":
+                e_labels_specific = e_labels_specific.view(-1,)
+            
+            else: #specific error prediction (6 classes for CE loss)
+                e_labels_specific = torch.argmax(e_labels_specific, dim=2)
+                e_labels_specific = e_labels_specific.view(-1,)  #Convert to class labels (0-5) for CE loss
+                e_labels_specific = e_labels_specific.view(-1,)  #Ensure e_labels is of shape (n_frames,)
             
             inputs = define_inputs(images=images,
                                 kinematics=kinematics,
@@ -1081,7 +1101,6 @@ def validate_single_epoch_COG(model: torch.nn.Module,
             test_smooth_loss = 0.0
             for p, l in zip(resize_list, labels_list):
                 p_classes = p.squeeze(0).transpose(1,0)
-
                 ce_loss = criterion(p_classes.squeeze(), l)
                 sm_loss = torch.mean(torch.clamp(criterion2(F.log_softmax(p_classes[1:, :], dim=1), F.log_softmax(p_classes.detach()[:-1, :], dim=1)), min=0, max=16))
                 test_clc_loss += ce_loss
@@ -1097,31 +1116,68 @@ def validate_single_epoch_COG(model: torch.nn.Module,
             p_classes = torch.softmax((predicted_list[0].squeeze().transpose(1, 0)), dim=1)
             p_classes_positive = p_classes[:, 1]
 
-            for j in range(len(p_classes_positive)):
-                test_all_probs.append(float(p_classes_positive.data[j]))
-            for j in range(len(preds)):
-                test_all_preds.append(int(preds.data[j]))
-            for j in range(len(e_labels)):
-                test_all_labels.append(e_labels[j].tolist())
-            for j in range(len(e_labels_specific)):
-                test_all_labels_specific.append(int(e_labels_specific.data[j]))
+            #Record probabilities and predictions
             for j in range(len(g_labels)):
-                test_all_gest_labels.append(int(g_labels.data[j]))
-                test_all_subjects.append(subject)
+                    test_all_gest_labels.append(int(g_labels.data[j]))
+                    test_all_subjects.append(subject)
+
+            if exp_kwargs['error_type'] == "global":
+                for j in range(len(p_classes_positive)):
+                    test_all_probs.append(float(p_classes_positive.data[j]))
+                for j in range(len(preds)):
+                    test_all_preds.append(int(preds.data[j]))
+                for j in range(len(e_labels)):
+                    test_all_labels.append(e_labels[j].tolist())
+                for j in range(len(e_labels_specific)):
+                    test_all_labels_specific.append(int(e_labels_specific.data[j]))
+                
+
+            else: #Specific error prediction (6 classes) --> use binary predictions
+                for j in range(len(preds)):
+                    pred = preds.data[j]
+                    label = e_labels_specific.data[j]
+                    test_all_probs.append(p_classes.data[j].tolist())
+                    test_all_preds.append(int(pred))
+                    test_all_labels.append(int(label))
+
+                    if label.sum() > 0:
+                        test_all_labels_binary.append(1)
+                    else:
+                        test_all_labels_binary.append(0)
+                    if pred.sum() > 0:
+                        test_all_preds_binary.append(1)
+                    else:
+                        test_all_preds_binary.append(0)    
             
             test_progress += 1
             total_time += (end_time - start_time)
 
     test_average_loss = float(test_loss) / len(test_dataloader)
-    test_jaccard = jaccard_score(test_all_labels_specific, test_all_preds, average='binary', pos_label=1)
-    test_f1 = f1_score(test_all_labels_specific, test_all_preds, average='binary', pos_label=1)
-    test_f1_weighted = f1_score(test_all_labels_specific, test_all_preds, average='weighted')
-    test_acc = accuracy_score(test_all_labels_specific, test_all_preds)
-    test_cm = confusion_matrix(test_all_labels_specific, test_all_preds)
     inference_rate = (total_time / images.shape[1]) * 1000  #Convert to ms per frame
 
-    return test_average_loss, test_f1, test_f1_weighted, test_acc, test_jaccard, test_cm, inference_rate, test_all_preds, test_all_probs, test_all_labels, test_all_labels_specific, test_all_gest_labels, test_all_subjects
+    if exp_kwargs['error_type'] == "global":
+        
+        test_jaccard = jaccard_score(test_all_labels_specific, test_all_preds, average='binary', pos_label=1)
+        test_f1 = f1_score(test_all_labels_specific, test_all_preds, average='binary', pos_label=1)
+        test_f1_weighted = f1_score(test_all_labels_specific, test_all_preds, average='weighted')
+        test_acc = accuracy_score(test_all_labels_specific, test_all_preds)
+        test_cm = confusion_matrix(test_all_labels_specific, test_all_preds)
+        
+        return test_average_loss, test_f1, test_f1_weighted, test_acc, test_jaccard, test_cm, inference_rate, test_all_preds, test_all_probs, test_all_labels, test_all_labels_specific, test_all_gest_labels, test_all_subjects
 
+    else: #Specific error prediction (6 classes) --> use binary metrics
+        test_f1_binary = f1_score(test_all_labels_binary, test_all_preds_binary, average='binary', pos_label=1)
+        test_jaccard_binary = jaccard_score(test_all_labels_binary, test_all_preds_binary, average='binary', pos_label=1)
+        test_accuracy_binary = accuracy_score(test_all_labels_binary, test_all_preds_binary)
+        test_cm_binary = confusion_matrix(test_all_labels_binary, test_all_preds_binary)
+        test_f1 = f1_score(test_all_labels, test_all_preds, average='weighted')
+        test_jaccard = jaccard_score(test_all_labels, test_all_preds, average='weighted')
+        test_accuracy = accuracy_score(test_all_labels, test_all_preds)
+        test_cm = confusion_matrix(test_all_labels, test_all_preds) 
+
+        return test_average_loss, test_f1_binary, test_f1, test_accuracy_binary, test_accuracy, test_jaccard_binary, test_jaccard, \
+            test_cm_binary, test_cm, inference_rate, test_all_preds, test_all_preds_binary, test_all_probs, test_all_labels, test_all_labels_binary, \
+            test_all_gest_labels, test_all_subjects
 
 def fusion(predicted_list,labels):
     all_out_list = []
@@ -1356,12 +1412,104 @@ def retrieve_results_mlflow(outs: list,
             LOSO_cm_train, LOSO_cm_test)
     
 
+def retrieve_results_mlflow_ES(outs: list,
+                               exp_kwargs: dict,
+                               setting: str,
+                               run_id: str) -> tuple:
+    
+    """ Retrieve results from mlflow for error specific prediction (i.e., exp_kwargs['error_type'] == 'all_errors').
+    
+    Args:
+        outs (list): List of output types (e.g., ['train', 'test']).
+        exp_kwargs (dict): Additional experiment parameters.
+        setting (str): The setting of the experiment (e.g., 'LOSO').
+        run_id (str): The mlflow run ID.
+
+    Returns:
+        tuple: A tuple containing the retrieved results.
+    """
+
+    #Compute avg and std of accuracy, f1 and jaccard across folds as saved in the best model
+    LOSO_f1_train, LOSO_f1_train_binary, LOSO_f1_test, LOSO_f1_test_binary, LOSO_acc_train, LOSO_acc_train_binary, LOSO_acc_test, LOSO_acc_test_binary, \
+    LOSO_jaccard_train, LOSO_jaccard_train_binary, LOSO_jaccard_test, LOSO_jaccard_test_binary = ([] for _ in range(12))
+
+    LOSO_cm_train_binary, LOSO_cm_test_binary = (np.zeros((2, 2)) for _ in range(2))  #Init confusion matrices
+    LOSO_cm_train, LOSO_cm_test = (np.zeros((6, 6)) for _ in range(2))  #Init confusion matrices for specific error 
+
+    if exp_kwargs['dataset_type'] == 'frame':
+        test_all_preds, test_all_preds_binary, test_all_probs, test_all_labels, test_all_labels_binary, \
+        test_all_gest_labels, test_all_subjects = ({} for _ in range(7))
+
+    for out in outs:
+
+        dict_path = f"runs:/{run_id}/best_model_{setting}_{out}.json"
+        best_model_dict = mlflow.artifacts.load_dict(dict_path)
+        
+        LOSO_f1_train.append(best_model_dict['train_f1_fold'])
+        LOSO_f1_train_binary.append(best_model_dict['train_f1_binary_fold'])
+        LOSO_f1_test.append(best_model_dict['test_f1_fold'])
+        LOSO_f1_test_binary.append(best_model_dict['test_f1_binary_fold'])
+        LOSO_acc_train.append(best_model_dict['train_acc_fold'])
+        LOSO_acc_train_binary.append(best_model_dict['train_accuracy_binary_fold'])
+        LOSO_acc_test.append(best_model_dict['test_acc_fold'])
+        LOSO_acc_test_binary.append(best_model_dict['test_accuracy_binary_fold'])
+        LOSO_jaccard_train.append(best_model_dict['train_jaccard_fold'])
+        LOSO_jaccard_train_binary.append(best_model_dict['train_jaccard_binary_fold'])
+        LOSO_jaccard_test.append(best_model_dict['test_jaccard_fold'])
+        LOSO_jaccard_test_binary.append(best_model_dict['test_jaccard_binary_fold'])
+
+        LOSO_cm_train += np.array(best_model_dict['train_cm_fold'])
+        LOSO_cm_train_binary += np.array(best_model_dict['train_cm_binary_fold'])
+        LOSO_cm_test += np.array(best_model_dict['test_cm_fold'])
+        LOSO_cm_test_binary += np.array(best_model_dict['test_cm_binary_fold'])
+
+        if exp_kwargs['dataset_type'] == 'frame':
+            try:
+                test_all_preds[out] = best_model_dict['test_all_preds_fold']
+                test_all_preds_binary[out] = best_model_dict['test_all_preds_binary_fold']
+                test_all_probs[out] = best_model_dict['test_all_probs_fold']
+                test_all_labels[out] = best_model_dict['test_all_labels_fold']
+                test_all_labels_binary[out] = best_model_dict['test_all_labels_binary_fold']
+                test_all_gest_labels[out] = best_model_dict['test_all_gest_labels_fold']
+                test_all_subjects[out] = best_model_dict['test_all_subjects_fold']
+
+            except:
+                test_all_preds[out] = best_model_dict['test_all_preds']
+                test_all_preds_binary[out] = best_model_dict['test_all_preds_binary']
+                test_all_probs[out] = best_model_dict['test_all_probs']
+                test_all_labels[out] = best_model_dict['test_all_labels']
+                test_all_labels_binary[out] = best_model_dict['test_all_labels_binary']
+                test_all_gest_labels[out] = best_model_dict['test_all_gest_labels']
+                test_all_subjects[out] = best_model_dict['test_all_subjects']
+
+    #Change confusion matrices to integer type
+    LOSO_cm_train = LOSO_cm_train.astype(int)
+    LOSO_cm_train_binary = LOSO_cm_train_binary.astype(int)
+    LOSO_cm_test = LOSO_cm_test.astype(int)
+    LOSO_cm_test_binary = LOSO_cm_test_binary.astype(int)
+
+    if exp_kwargs['dataset_type'] == 'frame':
+        return (LOSO_f1_train, LOSO_f1_train_binary, LOSO_f1_test, LOSO_f1_test_binary,
+                LOSO_acc_train, LOSO_acc_train_binary, LOSO_acc_test, LOSO_acc_test_binary,
+                LOSO_jaccard_train, LOSO_jaccard_train_binary, LOSO_jaccard_test, LOSO_jaccard_test_binary,
+                LOSO_cm_train, LOSO_cm_train_binary, LOSO_cm_test, LOSO_cm_test_binary,
+                test_all_preds, test_all_preds_binary, test_all_probs, test_all_labels, test_all_labels_binary,
+                test_all_gest_labels, test_all_subjects)
+    
+    else:
+        return (LOSO_f1_train, LOSO_f1_train_binary, LOSO_f1_test, LOSO_f1_test_binary,
+                LOSO_acc_train, LOSO_acc_test,
+                LOSO_jaccard_train, LOSO_jaccard_train_binary, LOSO_jaccard_test, LOSO_jaccard_test_binary,
+                LOSO_cm_train, LOSO_cm_train_binary, LOSO_cm_test, LOSO_cm_test_binary)
+
+
 def window_predictions(predictions,
                        e_labels,
                        gestures,
                        subjects,
                        window_size=10,
-                          stride=6):
+                        stride=6,
+                        binary=True):
     
     """
 
@@ -1413,7 +1561,13 @@ def window_predictions(predictions,
             #3. Create window
             #Binarize prediction by computing the average and threhsolding it at 0.5
             predictions_windows.append(np.mean(predictions[subject_index[start_idx:end_idx]]))
-            predictions_windows[-1] = 1.0 if predictions_windows[-1] >= 0.5 else 0.0
+            if binary:
+                predictions_windows[-1] = 1.0 if predictions_windows[-1] >= 0.5 else 0.0
+            else:
+                #In specifc error prediction, we need to retrieve the most common error type (6 in total)
+                #By having taken the mean, we can round it to the nearest integer to get the most common error type
+                predictions_windows[-1] = np.round(predictions_windows[-1])
+
             e_labels_windows.append(e_labels[subject_index[start_idx]])
             gestures_windows.append(current_gesture)
             subjects_windows.append(subject)
@@ -1440,8 +1594,9 @@ def frame2window(outs: list,
                  test_all_gest_labels: dict,
                  test_all_subjects: dict,
                  window_size: int = 10,
-                 stride: int = 6) -> tuple:
-    
+                 stride: int = 6,
+                 binary: bool = True) -> tuple:
+
     """
     Convert frame level predictions to window level predictions.
 
@@ -1473,7 +1628,7 @@ def frame2window(outs: list,
 
             #Window the predictions
             windowed_preds[out], windowed_labels[out], windowed_gest_labels[out], windowed_subjects[out] = window_predictions(
-                predictions, e_labels, gestures, subjects, window_size=window_size, stride=stride)
+                predictions, e_labels, gestures, subjects, window_size=window_size, stride=stride, binary=binary)
             
     return (windowed_preds,
             windowed_labels,
@@ -1487,8 +1642,9 @@ def compute_window_metrics(outs: list,
                  test_all_gest_labels: dict,
                  test_all_subjects: dict,
                  window_size: int = 10,
-                 stride: int = 6) -> tuple:
-    
+                 stride: int = 6,
+                 binary: bool = True) -> tuple:
+
     """
     Window frame-level predictions and compute metrics for window level predictions.
     Args:
@@ -1510,7 +1666,8 @@ def compute_window_metrics(outs: list,
         test_all_gest_labels,
         test_all_subjects,
         window_size=window_size,
-        stride=stride
+        stride=stride,
+        binary=binary
     )
 
     window_f1_scores = []
@@ -1520,6 +1677,7 @@ def compute_window_metrics(outs: list,
     samples_test = []
 
     for out in windowed_preds:
+        
         if out in windowed_preds:
             preds = windowed_preds[out].numpy().flatten()
             labels = windowed_labels[out].numpy().flatten()
@@ -1527,9 +1685,15 @@ def compute_window_metrics(outs: list,
             subjects = windowed_subjects[out]
 
             #Compute metrics
-            f1 = f1_score(labels, preds, average='binary')
+            if binary:
+                f1 = f1_score(labels, preds, average='binary')
+                jaccard = jaccard_score(labels, preds, average='binary')
+
+            else:
+                f1 = f1_score(labels, preds, average='weighted')
+                jaccard = jaccard_score(labels, preds, average='weighted')
+            
             acc = accuracy_score(labels, preds)
-            jaccard = jaccard_score(labels, preds, average='binary')
             cm = confusion_matrix(labels, preds)
 
             window_f1_scores.append(f1)
@@ -1688,7 +1852,10 @@ def instantiate_model(exp_kwargs: dict,
                     exp_kwargs['d_model'], 
                     exp_kwargs['d_q'], 
                     exp_kwargs['sequence_length'],
-                    device=device)
+                    device=device,
+                    SRM=exp_kwargs['SRM'],
+                    use_all_gestures=exp_kwargs['use_all_gestures'],
+                    use_skill_prompt=exp_kwargs['use_skill_prompt'])
 
     else:
         raise ValueError(f"Model {model_name} is not supported.")

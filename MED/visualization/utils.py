@@ -46,25 +46,47 @@ def plot_results_LOSO(train_f1_fold,
 
 def plot_cm(LOSO_cm_train: np.ndarray,
             LOSO_cm_test: np.ndarray,
-            exp_kwargs: dict,
-            image_folder: str):
+            image_folder: str,
+            binary: str = None):
     """
     Plot the confusion matrices for the LOSO cross-validation results.
 
     Inputs:
     - LOSO_cm_train: Confusion matrix for the training set.
     - LOSO_cm_test: Confusion matrix for the test set.
-    - exp_kwargs: Dictionary containing experiment settings such as frequency and model name.
+    - image_folder: Folder where the confusion matrix images will be saved.
+    - binary: Optional string to specify the binary classification setting.
+
+    Returns: None
     """
 
+    print("Confusion Matrix for Train:")
+    plt.figure(figsize=(15, 15))
+    
+    if binary:
+        ConfusionMatrixDisplay(LOSO_cm_train, display_labels=['No Error', 'Error']).plot(cmap=plt.cm.Blues)
+        plt.title(f'Confusion Matrix - Train - {binary}')
+        plt.savefig(os.path.join(image_folder, f'LOSO_Train_Confusion_Matrix_{binary}.png'))
 
-    plt.figure(figsize=(8, 6))
-    ConfusionMatrixDisplay(LOSO_cm_train, display_labels=['No Error', 'Error']).plot(cmap=plt.cm.Blues)
-    plt.title('Confusion Matrix - Train')
-    plt.savefig(os.path.join(image_folder, 'LOSO_Train_Confusion_Matrix.png'))
+    else:
+        ConfusionMatrixDisplay(LOSO_cm_train, display_labels=['No Error', 'OOV', 'MA', 'NP', ' OOV + MA', 'MA + NP']).plot(cmap=plt.cm.Blues)
+        plt.title('Confusion Matrix - Train')
+        plt.xticks(rotation=45)
+        plt.savefig(os.path.join(image_folder, 'LOSO_Train_Confusion_Matrix.png'))
+
+    plt.show()
+    
     print("Confusion Matrix for Test:")
+    plt.figure(figsize=(15, 15))
+    
+    if binary:
+        ConfusionMatrixDisplay(LOSO_cm_test, display_labels=['No Error', 'Error']).plot(cmap=plt.cm.Blues)
+        plt.title(f'Confusion Matrix - Test - {binary}')
+        plt.savefig(os.path.join(image_folder, f'LOSO_Test_Confusion_Matrix_{binary}.png'))
+    else:
+        ConfusionMatrixDisplay(LOSO_cm_test, display_labels=['No Error', 'OOV', 'MA', 'NP', ' OOV + MA', 'MA + NP']).plot(cmap=plt.cm.Blues)
+        plt.xticks(rotation=45)
+        plt.title('Confusion Matrix - Test')
+        plt.savefig(os.path.join(image_folder, 'LOSO_Train_Confusion_Matrix.png'))
 
-    plt.figure(figsize=(8, 6))
-    ConfusionMatrixDisplay(LOSO_cm_test, display_labels=['No Error', 'Error']).plot(cmap=plt.cm.Blues)
-    plt.title('Confusion Matrix - Test')
-    plt.savefig(os.path.join(image_folder, 'LOSO_Test_Confusion_Matrix.png'))
+    plt.show()

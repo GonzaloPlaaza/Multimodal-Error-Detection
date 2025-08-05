@@ -259,7 +259,7 @@ class Encoder_COG(nn.Module):
     
 
 class COG(nn.Module):
-    def __init__(self, num_layers_Basic, num_layers_R, num_R, num_f_maps, num_f_dim, num_classes, causal_conv, d_model, d_q, len_q, device, gest_template = 'A surgeon is', gest_prompt: str = './data/prompts/gest_prompt.pt'):
+    def __init__(self, num_layers_Basic, num_layers_R, num_R, num_f_maps, num_f_dim, num_classes, causal_conv, d_model, d_q, len_q, device, use_all_gestures, SRM = False, use_skill_prompt = False, gest_template = 'A surgeon is', gest_prompt: str = './data/prompts/gest_prompt.pt'):
         super(COG, self).__init__()
         
         self.name = 'COG'
@@ -270,47 +270,180 @@ class COG(nn.Module):
         self.dim = num_f_dim  #2048
         self.num_classes = num_classes  # 2
         self.causal_conv = causal_conv
-        
+        self.use_all_gestures = use_all_gestures 
+        self.gest_template = gest_template
 
         self.d_model = d_model #64 or 128
         self.d_q = d_q #8 or 16
         self.len_q = len_q # 30
         self.device = device
         self.gest_prompt = gest_prompt
+        self.use_skill_prompt = use_skill_prompt
+
+        self.SRM = SRM #SRM is the Skill Reasoning Module, which is used to reason about the skill level of the surgeon
+        if self.SRM:
+            
+            self.skill_list = ['A surgeon is novice',
+                               'A surgeon is intermediate',
+                               'A surgeon is expert',
+                               #'A surgeon consistently respects the tissue',
+                               #'A surgeon uses unnecessary force on the tissue',
+                               'A surgeon has excellent suture control',
+                               'A surgeon performs repeated entanglement and poor knot tying',
+                               #'A surgeon made unnecessary moves',
+                               #'A surgeon has a clear economy of movement and maximum efficiency']
+                               'A surgeon has efficient transitions in suturing procedure',
+                               'A surgeon frequently interrupts the flow']
+            """
+            self.skill_list = ['Surgeon frequently uses excessive force on the tissue',
+                               'Surgeon had careful tissue handling but occasionally caused inadvertent damage',
+                               'Surgeon consistently respects the tissue',
+                               'Surgeon is awkward and unsure with repeated entanglement and poor knot tying',
+                               'Surgeon placed majority of knots with appropriate tension',
+                               'Surgeon has excellent suture control',
+                               'Surgeon made unnecessary moves',
+                               'Surgeon had efficient time/motion but some unnecessary moves',
+                               'Surgeon has a clear economy of movement and maximum efficiency',
+                               'Surgeon frequently interrupts the flow',
+                               'Surgeon demonstrates some forward planning and reasonable procedure progression',
+                               'Surgeon has efficient transitions in procedure',
+                               'Surgeon overall performance is poor',
+                                'Surgeon overall performance is competent',
+                                'Surgeon overall performance is clearly superior'
+                               ]
+            """
+            self.use_skill_prompt = False #If we use the SRM, we do not use the skill prompt, as it is already included in the skill list
 
         num_gest_f = 512 # 768
         
-        self.gest_list = ['reaching for needle with right hand',
-                    'positioning needle',
-                    'pushing needle through tissue',
-                    'transferring needle from left to right',
-                    'moving to center with needle in grip',
-                    'pulling suture with left hand',
-                    'pulling suture with right hand',
-                    'orienting needle',
-                    'using right hand to help tighten suture',
-                    'loosening more suture',
-                    'dropping suture at end and movign to end points',
-                    'reaching for needle with left hand',
-                    'making C loop around right hand',
-                    'reaching for suture with right hand',
-                    'pulling suture with both hands'
-        ]
+        
+        if self.use_all_gestures:
+            
+            self.gest_list = ['reaching for needle with right hand',
+                        'positioning needle',
+                        'pushing needle through tissue',
+                        'transferring needle from left to right',
+                        'moving to center with needle in grip',
+                        'pulling suture with left hand',
+                        'pulling suture with right hand',
+                        'orienting needle',
+                        'using right hand to help tighten suture',
+                        'loosening more suture',
+                        'dropping suture at end and moving to end points',
+                        'reaching for needle with left hand',
+                        'making C loop around right hand',
+                        'reaching for suture with right hand',
+                        'pulling suture with both hands'
+            ]
+            
+            """
+            #Use 11 non-sense gestures and 4 real ones
+            self.gest_list = ['eating a needle with the left hand'
+                              'throwing a surgeon at the needle',
+                              'reaching for wallet with right suture',
+                              'reaching for needle with right hand',
+                              'breaking a suture with three needles',
+                              'creating a black hole with needle',
+                              'needling a needle with the suture',
+                              'pushing a needle through the suture',
+                              'positioning needle',
+                              'loosening a formula one car with the needle',
+                              'pulling a presidential campaign with the suture',
+                              'orienting needle',
+                              'playing the piano with the needle',
+                              'using right hand to help tighten suture',
+                              'pulling two left hands with suture needle']
+
+            #Use all made up 15 gestures
+            self.gest_list = ['eating a needle with the left hand',
+                            'throwing a surgeon at the needle',
+                            'reaching for wallet with right suture',
+                            'reaching for needle with right suture',
+                            'breaking a suture with three needles',
+                            'creating a black hole with needle',
+                            'needling a needle with the suture',
+                            'pushing her issue through the suture',
+                            'poisoning needle',
+                            'loosening a formula one car with the needle',
+                            'pulling a presidential campaign with the suture',
+                            'disorienting needle',
+                            'playing the piano with the needle',
+                            'using the wrong hand to help tighten suture',
+                            'pulling two left hands with suture needle']
+
+            #Use 15 gestures which have NOTHING to do with surgery
+            self.gest_list = ['eating noodles with her enemy',
+                              'throwing a ball at the museum',
+                              'creating wooden furniture for the modern hospital',
+                              'reading three boring 19th century Russian novels',
+                              'attempting to get Distinction in his thesis',
+                              'watching three movies with four eyes',
+                              'dismantling the Galactic Federation',
+                              'not finding jobs in London',
+                              'convincing his grandmother to buy him a car',
+                              'discovering the laws of Azerbaijan',
+                              'playing a prehistoric game of cards',
+                              'not finding a needle in a haystack',
+                              'renting cereal from his mother',
+                              'remembering Alonso winning races in 2005',
+                              'fitting a camel through the eye of a needle']
+
+            """                   
+        else: #only use really found ones in dataset (1-8, excluding 7)
+            print("Hey!")
+            
+            self.gest_list = ['reaching for needle with right hand',
+                            'positioning needle',
+                            'pushing needle through tissue',
+                            'transferring needle from left to right',
+                            'moving to center with needle in grip',
+                            'pulling suture with left hand',
+                            'orienting needle',
+                            'using right hand to help tighten suture',
+            ]
+
+        if self.use_skill_prompt:
+                self.skill_list = ['novice', 'intermediate', 'expert']
         
         text_model, text_preprocess = clip.load('ViT-B/32', device='cpu') #'ViT-L/14'
         num_gest = len(self.gest_list)  # 15
+        if self.SRM:
+            self.num_skills = len(self.skill_list)
         self.num_gestures = num_gest
         self.all_gest_fea = torch.zeros(1, num_gest_f) #(1, 512)
+        self.all_skill_fea = torch.zeros(1, num_gest_f)
 
-        for i in range(num_gest):
-            # Encode each of the gestures using CLIP
-            gest_prompt = text_model.encode_text(clip.tokenize(f'{gest_template} {self.gest_list[i]} ...')).float()
-            self.all_gest_fea = torch.cat((self.all_gest_fea, gest_prompt), dim = 0)
+        if self.use_skill_prompt:
+            #The prompt is of form: "A {skill} surgeon is {gesture} ..."
+            for skill in self.skill_list:
+                for i in range(num_gest):
+                    gest_prompt = text_model.encode_text(clip.tokenize(f'A self-reported {skill}-skilled surgeon is {self.gest_list[i]} ...')).float()
+                    self.all_gest_fea = torch.cat((self.all_gest_fea, gest_prompt), dim = 0)
+
+            num_gest = len(self.skill_list) * num_gest  #8*3 = 24
+            self.num_gestures = num_gest
+
+        else:
+            for i in range(num_gest):
+                # Encode each of the gestures using CLIP
+                gest_prompt = text_model.encode_text(clip.tokenize(f'{self.gest_template} {self.gest_list[i]} ...')).float()
+                self.all_gest_fea = torch.cat((self.all_gest_fea, gest_prompt), dim = 0)
+            
+            if self.SRM:
+                #Create separate embeddings for each skill level
+                for skill in self.skill_list:
+                    skill_prompt = text_model.encode_text(clip.tokenize(skill)).float()
+                    self.all_skill_fea = torch.cat((self.all_skill_fea, skill_prompt), dim = 0)
         
-        self.all_gest_fea = self.all_gest_fea[1:]
+        self.all_gest_fea = self.all_gest_fea[1:] #Remove the first element which is all zeros
         torch.save(self.all_gest_fea, self.gest_prompt) #self.gest_prompt is the path to save the gesture embeddings
-        
         self.all_action_fea = nn.Parameter(torch.load(self.gest_prompt), requires_grad=False)
+
+        if self.SRM:
+            self.all_skill_fea = self.all_skill_fea[1:]
+            torch.save(self.all_skill_fea, self.gest_prompt.replace('gest_prompt', 'skill_prompt')) #Save the skill embeddings
+            self.all_skill_fea = nn.Parameter(torch.load(self.gest_prompt.replace('gest_prompt', 'skill_prompt')), requires_grad=False)
+
         
         #else:
          #   self.all_action_fea = nn.Parameter(torch.load(self.gest_prompt), requires_grad=False)
@@ -318,14 +451,25 @@ class COG(nn.Module):
         #self.linear = nn.Linear(in_features = 768, out_features = self.num_f_maps) 
 
         self.cot = MyTransformer(self.dim, num_gest_f, d_model, d_q, len_q, device)
-        ##slow path
-        self.TCN = SingleStageModel1_COG(num_layers_Basic, num_f_maps, num_gest*d_model, num_classes, kernel_size=1, causal_conv = True, dropout = True, hier = False, use_output= True)
-        self.Rs = nn.ModuleList([copy.deepcopy(SingleStageModel1_COG(num_layers_R, num_f_maps, num_classes, num_classes,  kernel_size=1, causal_conv = True, dropout = False, hier = True)) for _ in range(num_R)])
-        ##fast path
-        self.pool = nn.AvgPool1d(kernel_size=16, stride=16)
-        self.fast_stage1 = SingleStageModel1_COG(num_layers_Basic, num_f_maps, num_gest*d_model, num_classes, kernel_size=1, causal_conv = True, dropout = True, hier = False, use_output= True)
-        self.fast_Rs = nn.ModuleList([copy.deepcopy(SingleStageModel1_COG(num_layers_R, num_f_maps, num_classes, num_classes,  kernel_size=1, causal_conv = True, dropout = False, hier =False, use_output= True)) for _ in range(num_R)])
+        self.cot_skill = MyTransformer(self.dim, num_gest_f, d_model, d_q, len_q, device) if self.SRM else None
         
+        ##slow path
+        if not self.SRM:
+            self.TCN = SingleStageModel1_COG(num_layers_Basic, num_f_maps, num_gest*d_model, num_classes, kernel_size=1, causal_conv = True, dropout = True, hier = False, use_output= True)
+            self.Rs = nn.ModuleList([copy.deepcopy(SingleStageModel1_COG(num_layers_R, num_f_maps, num_classes, num_classes,  kernel_size=1, causal_conv = True, dropout = False, hier = True)) for _ in range(num_R)])
+            ##fast path
+            self.pool = nn.AvgPool1d(kernel_size=16, stride=16)
+            self.fast_stage1 = SingleStageModel1_COG(num_layers_Basic, num_f_maps, num_gest*d_model, num_classes, kernel_size=1, causal_conv = True, dropout = True, hier = False, use_output= True)
+            self.fast_Rs = nn.ModuleList([copy.deepcopy(SingleStageModel1_COG(num_layers_R, num_f_maps, num_classes, num_classes,  kernel_size=1, causal_conv = True, dropout = False, hier =False, use_output= True)) for _ in range(num_R)])
+            
+        else:
+            
+            self.TCN = SingleStageModel1_COG(num_layers_Basic, num_f_maps, num_gest*d_model + self.num_skills*d_model, num_classes, kernel_size=1, causal_conv = True, dropout = True, hier = False, use_output= True)
+            self.Rs = nn.ModuleList([copy.deepcopy(SingleStageModel1_COG(num_layers_R, num_f_maps, num_classes, num_classes,  kernel_size=1, causal_conv = True, dropout = False, hier = True)) for _ in range(num_R)])
+            ##fast path
+            self.pool = nn.AvgPool1d(kernel_size=16, stride=16)
+            self.fast_stage1 = SingleStageModel1_COG(num_layers_Basic, num_f_maps, num_gest*d_model + self.num_skills*d_model, num_classes, kernel_size=1, causal_conv = True, dropout = True, hier = False, use_output= True)
+            self.fast_Rs = nn.ModuleList([copy.deepcopy(SingleStageModel1_COG(num_layers_R, num_f_maps, num_classes, num_classes,  kernel_size=1, causal_conv = True, dropout = False, hier =False, use_output= True)) for _ in range(num_R)])
 
         #self.conv_out_list = [nn.Conv1d(num_f_maps, num_classes, 1) for s in range(num_R)]
         self.conv_out = nn.Conv1d(num_f_maps, num_classes, 1)
@@ -340,15 +484,21 @@ class COG(nn.Module):
         
         all_action_fea = self.all_action_fea.unsqueeze(0) #[1, 15, 768]
         xx = self.cot(all_action_fea, x) #[1, 345, num_gest * d_model]
+    
+        #Option A. Early concatenation
+        if self.SRM: 
+            all_skill_fea = self.all_skill_fea.unsqueeze(0)
+            skill_fea = self.cot_skill(all_skill_fea, x) #[1, 345, num_skills * d_model]
+            xx = torch.cat((xx, skill_fea), dim=2)
 
         out_list = []
         f_list = []
-        
-        xx = xx.permute(0, 2, 1) #[1, 345, num_gest * d_model] -> [1, num_gest * d_model, 345]
-        
+        xx = xx.permute(0, 2, 1) #[1, 345, num_gest * d_model + num_skills * d_model] -> [1, num_gest * d_model + num_skills * d_model, 345]
+
+
         ##slow_path
         f, out1 = self.TCN(xx)
-
+        
         f_list.append(f)
 
         for R in self.Rs:
@@ -357,14 +507,12 @@ class COG(nn.Module):
 
         f_list = self.fpn(f_list)
 
-
         for f in f_list:
             out_list.append(self.conv_out(f))
         
-        
         ##fast_path
         fast_input = self.pool(xx)
-        fast_f, fast_out = self.fast_stage1(fast_input) 
+        fast_f, fast_out = self.fast_stage1(fast_input)
         f_list.append(fast_f)
         out_list.append(fast_out)
 

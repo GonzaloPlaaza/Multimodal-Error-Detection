@@ -22,7 +22,17 @@ class CustomFrameDataset(Dataset):
         self.feature_standardization_dict = self.load_feature_standardization_dict()
         self.csv_file = pd.read_csv(os.path.join(fold_data_path, csv_filename), header=None, names=['files'])
         self.delete_ND = delete_ND
-    
+
+        self.skill_level_dict = {
+            'B': 'Novice', #Novice
+            'C': 'Intermediate', #Intermediate
+            'D': 'Expert', #Expert
+            'E': 'Expert', #Expert
+            'F': 'Intermediate',
+            'G': 'Novice', 
+            'H': 'Novice',
+            'I': 'Expert'}
+     
 
     def __len__(self):
         
@@ -71,20 +81,35 @@ class CustomFrameDataset(Dataset):
             #Standardize features if needed
 
         #Transform error labels to powerset format
-        e_labels, mask_position_needle_drop = self.powerset_error_labels(e_labels, delete_ND=True)[0]  #Convert error labels to powerset format
+        e_labels, mask_position_needle_drop = self.powerset_error_labels(e_labels, delete_ND=True) #Convert error labels to powerset format
 
         if self.delete_ND:
             images = images[~mask_position_needle_drop]
             kinematics = kinematics[~mask_position_needle_drop]
             g_labels = g_labels[~mask_position_needle_drop]
             e_labels = e_labels[~mask_position_needle_drop]
-            subject = subject[~mask_position_needle_drop.numpy()]
+        
 
         for key, value in self.feature_standardization_dict.items():
             if key == 'kinematics':
                 kinematics = (kinematics - value['mean']) / value['std']
-        
-        return images, kinematics, g_labels, e_labels, subject
+
+        #Skill level: convert skill level to numerical value: novice = [1, 0, 0], intermediate = [0, 1, 0], expert = [0, 0, 1]
+        skill_level = torch.zeros((kinematics.size(0), 3))
+
+        #Subject is Needle_Passing_B001
+        subject_letter = subject[-4] #B, C, D, E, F, G, H, I
+        skill = self.skill_level_dict[subject_letter]
+        if skill == 'Novice':
+            skill_level[:, 0] = 1
+        elif skill == 'Intermediate':
+            skill_level[:, 1] = 1
+        elif skill == 'Expert':
+            skill_level[:, 2] = 1
+        else:
+            raise ValueError(f"Skill level {skill} not recognized.")
+
+        return images, kinematics, g_labels, e_labels, subject, skill_level
     
     def load_feature_standardization_dict(self):
         """
