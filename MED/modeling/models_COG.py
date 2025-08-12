@@ -259,7 +259,7 @@ class Encoder_COG(nn.Module):
     
 
 class COG(nn.Module):
-    def __init__(self, num_layers_Basic, num_layers_R, num_R, num_f_maps, num_f_dim, num_classes, causal_conv, d_model, d_q, len_q, device, use_all_gestures, SRM = False, use_skill_prompt = False, gest_template = 'A surgeon is', gest_prompt: str = './data/prompts/gest_prompt.pt'):
+    def __init__(self, num_layers_Basic, num_layers_R, num_R, num_f_maps, num_f_dim, num_classes, causal_conv, d_model, d_q, len_q, device, use_all_gestures = True, SRM = False, use_skill_prompt = False, gest_template = 'A surgeon is', gest_prompt: str = './data/prompts/gest_prompt.pt'):
         super(COG, self).__init__()
         
         self.name = 'COG'
@@ -282,7 +282,7 @@ class COG(nn.Module):
 
         self.SRM = SRM #SRM is the Skill Reasoning Module, which is used to reason about the skill level of the surgeon
         if self.SRM:
-            
+            """
             self.skill_list = ['A surgeon is novice',
                                'A surgeon is intermediate',
                                'A surgeon is expert',
@@ -311,14 +311,16 @@ class COG(nn.Module):
                                 'Surgeon overall performance is competent',
                                 'Surgeon overall performance is clearly superior'
                                ]
-            """
+            
             self.use_skill_prompt = False #If we use the SRM, we do not use the skill prompt, as it is already included in the skill list
 
         num_gest_f = 512 # 768
         
         
         if self.use_all_gestures:
-            
+
+            self.gest_list = ['novice', 'intermediate', 'expert'] 
+            """
             self.gest_list = ['reaching for needle with right hand',
                         'positioning needle',
                         'pushing needle through tissue',
@@ -336,12 +338,12 @@ class COG(nn.Module):
                         'pulling suture with both hands'
             ]
             
-            """
+            
             #Use 11 non-sense gestures and 4 real ones
             self.gest_list = ['eating a needle with the left hand'
                               'throwing a surgeon at the needle',
                               'reaching for wallet with right suture',
-                              'reaching for needle with right hand',
+                              'being sutured',
                               'breaking a suture with three needles',
                               'creating a black hole with needle',
                               'needling a needle with the suture',
@@ -349,7 +351,7 @@ class COG(nn.Module):
                               'positioning needle',
                               'loosening a formula one car with the needle',
                               'pulling a presidential campaign with the suture',
-                              'orienting needle',
+                              'disorienting needle',
                               'playing the piano with the needle',
                               'using right hand to help tighten suture',
                               'pulling two left hands with suture needle']
