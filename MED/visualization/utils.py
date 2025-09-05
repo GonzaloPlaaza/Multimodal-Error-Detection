@@ -1,6 +1,6 @@
 import matplotlib
 matplotlib.rcParams['text.usetex'] = True
-matplotlib.rcParams['figure.dpi'] = 100 #high resolution
+matplotlib.rcParams['figure.dpi'] = 150 #high resolution
 import matplotlib.pyplot as plt
 import os
 import numpy as np
@@ -66,18 +66,19 @@ def plot_cm(LOSO_cm_train: np.ndarray,
     
     if binary:
         ConfusionMatrixDisplay(LOSO_cm_train, display_labels=['No Error', 'Error']).plot(cmap=plt.cm.Blues)
-        plt.title(f'Confusion Matrix - Train - {binary}')
+        plt.title(f'Confusion Matrix - Train - {binary}', fontsize = 20)
         plt.savefig(os.path.join(image_folder, f'LOSO_Train_Confusion_Matrix_{binary}.png'))
 
     else:
         try:
             ConfusionMatrixDisplay(LOSO_cm_train, display_labels=['No Error', 'OOV', 'MA', 'NP', ' OOV + MA', 'MA + NP']).plot(cmap=plt.cm.Blues)
-            plt.title('Confusion Matrix - Train')
+            plt.title('Confusion Matrix - Train', fontsize=20)
         except:
             ConfusionMatrixDisplay(LOSO_cm_train, display_labels=['OOV', 'MA', 'NP', 'OOV + MA', 'MA + NP']).plot(cmap=plt.cm.Blues)
-            plt.title('Confusion Matrix - Train - Specific Errors')
-        
-        plt.xticks(rotation=45)
+            plt.title('Confusion Matrix - Train - Specific Errors', fontsize=20)
+
+        plt.xticks(rotation=45, fontsize = 13)
+        plt.yticks(fontsize = 13)
         plt.savefig(os.path.join(image_folder, 'LOSO_Train_Confusion_Matrix.png'))
 
     plt.show()
@@ -87,17 +88,20 @@ def plot_cm(LOSO_cm_train: np.ndarray,
     
     if binary:
         ConfusionMatrixDisplay(LOSO_cm_test, display_labels=['No Error', 'Error']).plot(cmap=plt.cm.Blues)
-        plt.title(f'Confusion Matrix - Test - {binary}')
+        plt.title(f'Confusion Matrix - Test - {binary}', fontsize = 20)
+        plt.xticks(fontsize = 13)
+        plt.yticks(fontsize = 13)
         plt.savefig(os.path.join(image_folder, f'LOSO_Test_Confusion_Matrix_{binary}.png'))
     
     else:
         if labels:
             ConfusionMatrixDisplay(LOSO_cm_test, display_labels=labels).plot(cmap=plt.cm.Blues)
-            plt.title('Confusion Matrix - Test - Specific Errors')
+            plt.title('Confusion Matrix - Test - Specific Errors', fontsize=20)
         else:
             ConfusionMatrixDisplay(LOSO_cm_test, display_labels=['No Error', 'OOV', 'MA', 'NP', ' OOV + MA', 'MA + NP']).plot(cmap=plt.cm.Blues)
-            plt.title('Confusion Matrix - Test')
-        plt.xticks(rotation=45)
+            plt.title('Confusion Matrix - Test', fontsize=20)
+        plt.xticks(rotation=45, fontsize = 13)
+        plt.yticks(fontsize = 13)
         plt.savefig(os.path.join(image_folder, 'LOSO_Test_Confusion_Matrix.png'))
 
     plt.show()

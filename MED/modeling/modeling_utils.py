@@ -232,12 +232,20 @@ def define_model_objects(exp_kwargs: dict,
 
     #b. Define loss function and optimizer
     if exp_kwargs['pos_weight']:
-        pos_weight = torch.tensor(class_counts[0] / class_counts[1], device=device, dtype=torch.float32) #downsample the positive class
-        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+        if exp_kwargs['error_type'] == 'global':
+            pos_weight = torch.tensor(class_counts[0] / class_counts[1], device=device, dtype=torch.float32) #downsample the positive class
+            criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        
+        elif exp_kwargs['error_type'] == 'all_errors':
+            criterion = nn.CrossEntropyLoss(weight=torch.tensor(class_counts, device=device, dtype=torch.float32))
     
     else:
         if exp_kwargs['dataset_type'] == "window":
-            criterion = nn.BCEWithLogitsLoss()
+            if exp_kwargs['error_type'] == 'global':
+                criterion = nn.BCEWithLogitsLoss()
+            elif exp_kwargs['error_type'] == 'all_errors': #6 classes
+                criterion = nn.CrossEntropyLoss()
 
         elif exp_kwargs['dataset_type'] == "frame":
             if exp_kwargs['error_type'] == 'sequential':
@@ -264,6 +272,7 @@ def compute_loss(outputs: torch.Tensor,
             outputs = outputs.squeeze(1)
         except:
             pass
+
         loss = criterion(outputs, e_labels)
 
     elif dataset_type == "frame":
@@ -320,6 +329,7 @@ def train_single_epoch(model: torch.nn.Module,
         model.train()
     
     train_loss, train_f1, train_f1_weighted, train_acc, train_jaccard = 0.0, 0.0, 0.0, 0.0, 0.0
+    train_all_probs, train_all_preds, train_all_labels, train_all_subjects = [], [], [], []
     train_cm = np.zeros((2, 2), dtype=int)  # Assuming binary classification
 
     for i, batch in enumerate(tqdm.tqdm(train_dataloader, 
@@ -327,7 +337,11 @@ def train_single_epoch(model: torch.nn.Module,
                                         )):
         
         #images, kinematics, g_labels, e_labels, task, trial, subject = batch
-        images, kinematics, g_labels, e_labels, subject = batch
+        try:
+            images, kinematics, g_labels, e_labels, subject = batch
+        except:
+            images, kinematics, g_labels, e_labels, subject, skill_level = batch
+
         g_labels = g_labels.to(device).float()
         e_labels_specific = define_error_labels(e_labels = e_labels, exp_kwargs=exp_kwargs)
         e_labels_specific = e_labels_specific.to(device).float()
@@ -366,6 +380,18 @@ def train_single_epoch(model: torch.nn.Module,
         train_jaccard += jaccard_score(e_labels_specific.detach().cpu().numpy(), outputs_binary.detach().cpu().numpy(), average='binary', pos_label=1)
         train_cm += confusion_matrix(e_labels_specific.detach().cpu().numpy(), outputs_binary.detach().cpu().numpy())
 
+        if exp_kwargs['return_train_preds']:
+            for j in range(len(outputs)):
+                try:
+                    train_all_probs.append(outputs_sigmoid[j].item())
+                    train_all_subjects.append(subject[j])
+                except:
+                    train_all_probs = []
+                    train_all_subjects.append(subject)
+                train_all_preds.append(outputs_binary[j].item())
+                train_all_labels.append(e_labels_specific[j].item())
+                
+
     if scheduler is not None:
         scheduler.step()
     
@@ -375,7 +401,287 @@ def train_single_epoch(model: torch.nn.Module,
     train_acc /= len(train_dataloader)
     train_jaccard /= len(train_dataloader)
 
-    return train_loss, train_f1, train_f1_weighted, train_acc, train_jaccard, train_cm
+    if exp_kwargs['return_train_preds']:
+        return train_loss, train_f1, train_f1_weighted, train_acc, train_jaccard, train_cm, train_all_probs, train_all_preds, train_all_labels, train_all_subjects    
+    else:
+        return train_loss, train_f1, train_f1_weighted, train_acc, train_jaccard, train_cm
+
+
+def train_single_epoch_ES(model: torch.nn.Module, 
+                       feature_extractor: torch.nn.Module,
+                       train_dataloader: DataLoader,
+                       criterion: torch.nn.Module,
+                       optimizer: torch.optim.Optimizer,
+                       scheduler: torch.optim.lr_scheduler._LRScheduler,    
+                       device: torch.device,
+                       exp_kwargs: dict) -> tuple:
+    
+    """
+    Train the model for a single epoch.
+
+    Args:
+        model (torch.nn.Module): The model to train.
+        feature_extractor (torch.nn.Module): The feature extractor to use.
+        train_dataloader (DataLoader): The dataloader for the training set.
+        criterion (torch.nn.Module): The loss function.
+        optimizer (torch.optim.Optimizer): The optimizer to use.
+        device (torch.device): The device to train on.
+        exp_kwargs (dict): Additional experiment parameters.
+
+    Returns:
+        tuple: Expanded return signature to match train_single_epoch_COG:
+               - For global: average loss, F1, F1 weighted, accuracy, Jaccard, CM, (optional: probs, preds, labels, subjects)
+               - For all_errors: binary F1, macro F1, binary accuracy, macro accuracy, binary Jaccard, macro Jaccard,
+                                 CM binary, CM macro, (optional: probs, preds, labels, binary labels/preds)
+    """
+    if exp_kwargs['data_type'] != "kinematics":
+        feature_extractor.train()
+        model.train()
+    else:
+        model.train()
+    
+    train_loss = 0.0
+
+    # === MOD: Added storage lists to record predictions, probs, labels, subjects ===
+    train_all_probs = []
+    train_all_preds = []
+    train_all_preds_binary = []
+    train_all_labels = []
+    train_all_labels_binary = []
+    train_all_subjects = []
+
+    for i, batch in enumerate(tqdm.tqdm(train_dataloader, total=len(train_dataloader))):
+        
+        if len(batch) == 6:  
+            images, kinematics, g_labels, e_labels, subject, skill_level = batch
+        else:
+            images, kinematics, g_labels, e_labels, subject = batch
+
+        g_labels = g_labels.to(device).float()
+        e_labels_specific = define_error_labels(e_labels=e_labels, exp_kwargs=exp_kwargs)
+        e_labels_specific = e_labels_specific.to(device).float()
+        if exp_kwargs['dataset_type'] == "frame":
+            e_labels_specific = torch.argmax(e_labels_specific, dim=2)# 0-5 class labels
+        else:
+            e_labels_specific = torch.argmax(e_labels_specific, dim=1) #window labels
+      
+        e_labels_specific = e_labels_specific.view(-1,)
+
+        inputs = define_inputs(images=images,
+                               kinematics=kinematics,
+                               feature_extractor=feature_extractor,
+                               exp_kwargs=exp_kwargs,
+                               device=device)
+        
+        outputs = model(inputs)
+        loss, outputs = compute_loss(outputs=outputs,
+                                     e_labels=e_labels_specific.float(),
+                                     criterion=criterion,
+                                     dataset_type=exp_kwargs['dataset_type'])
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        train_loss += loss.item()
+
+        
+        if exp_kwargs['dataset_type'] == "frame":
+            _, preds = torch.max(outputs[-1].squeeze().transpose(1, 0).data, 1)
+            probs = torch.softmax(outputs[-1].squeeze().transpose(1, 0), dim=1)
+            probs_positive = probs[:, 1]
+        else:
+            probs = torch.softmax(outputs, dim=1)
+            preds = torch.argmax(probs, dim=1)
+            probs_positive = probs[:, 1]
+        
+        for index in range(len(preds)):
+            pred = preds[index]
+            label = e_labels_specific[index]
+            train_all_preds.append(int(pred))
+            train_all_labels.append(int(label))
+
+            # Binary indicators
+            if label.sum() > 0:
+                train_all_labels_binary.append(1)
+            else:
+                train_all_labels_binary.append(0)
+            if pred.sum() > 0:
+                train_all_preds_binary.append(1)
+            else:
+                train_all_preds_binary.append(0)
+
+    if scheduler is not None:
+        scheduler.step()
+
+    train_average_loss = float(train_loss) / len(train_dataloader)
+    
+    #Binary metrics (error vs no error)
+    train_f1_binary = f1_score(train_all_labels_binary, train_all_preds_binary, average='binary', pos_label=1)
+    train_jaccard_binary = jaccard_score(train_all_labels_binary, train_all_preds_binary, average='binary', pos_label=1)
+    train_accuracy_binary = accuracy_score(train_all_labels_binary, train_all_preds_binary)
+    train_cm_binary = confusion_matrix(train_all_labels_binary, train_all_preds_binary)
+
+    #Macro metrics (across all error types)
+    train_f1_macro = f1_score(train_all_labels, train_all_preds, average='macro')
+    train_jaccard_macro = jaccard_score(train_all_labels, train_all_preds, average='macro')
+    train_accuracy_macro = accuracy_score(train_all_labels, train_all_preds)
+    train_cm_macro = confusion_matrix(train_all_labels, train_all_preds)
+
+    if exp_kwargs['return_train_preds']:
+        print("Unique labels in train_all_labels:", np.unique(train_all_labels, return_counts=True))
+        print("Unique preds in train_all_preds:", np.unique(train_all_preds, return_counts=True))
+        return (train_average_loss, train_f1_binary, train_f1_macro, train_accuracy_binary, train_accuracy_macro,
+                train_jaccard_binary, train_jaccard_macro,
+                train_cm_binary, train_cm_macro,
+                train_all_probs, train_all_preds, train_all_labels,
+                train_all_labels_binary, train_all_preds_binary)
+    else:
+        return train_average_loss, train_f1_binary, train_f1_macro, train_accuracy_binary, train_accuracy_macro, train_jaccard_binary, train_jaccard_macro, train_cm_binary, train_cm_macro
+
+
+
+def train_single_epoch_Sequential(model: torch.nn.Module,
+                                  feature_extractor: torch.nn.Module,
+                                  train_dataloader: DataLoader,
+                                  criterion: torch.nn.Module,
+                                  optimizer: torch.optim.Optimizer,
+                                  device: torch.device,
+                                  scheduler: torch.optim.lr_scheduler._LRScheduler,
+                                  exp_kwargs: dict):
+    
+    """
+    Train the model for a single epoch in the sequential architecture
+
+    Args:
+        model (torch.nn.Module): The model to train.
+        feature_extractor (torch.nn.Module): The feature extractor to use.
+        train_dataloader (DataLoader): The dataloader for the training set.
+        criterion (torch.nn.Module): The loss function.
+        optimizer (torch.optim.Optimizer): The optimizer to use.
+        device (torch.device): The device to train on.
+        exp_kwargs (dict): Additional experiment parameters.
+
+    Returns:
+        tuple: Expanded return signature to match train_single_epoch_COG:
+               - For global: average loss, F1, F1 weighted, accuracy, Jaccard, CM, (optional: probs, preds, labels, subjects)
+               - For all_errors: binary F1, macro F1, binary accuracy, macro accuracy, binary Jaccard, macro Jaccard,
+                                 CM binary, CM macro, (optional: probs, preds, labels, binary labels/preds)
+    """
+    
+    if exp_kwargs['data_type'] != "kinematics":
+        feature_extractor.train()
+        model.train()
+    else:
+        model.train()
+    
+    train_loss = 0.0
+
+    train_preds_all = []
+    train_labels_all = []
+    train_preds_error_specific = []
+    train_labels_error_specific = []
+
+    batch_size = exp_kwargs['batch_size']
+
+    for i, batch in enumerate(tqdm.tqdm(train_dataloader, total=len(train_dataloader))):
+        
+        #Extract batch information
+        if len(batch) == 6:  
+            images, kinematics, g_labels, e_labels, subject, skill_level = batch
+        else:
+            images, kinematics, g_labels, e_labels, subject = batch
+
+        g_labels = g_labels.to(device).float()
+        e_labels_specific = define_error_labels(e_labels=e_labels, exp_kwargs=exp_kwargs)
+        e_labels_specific = e_labels_specific.to(device).float()
+        
+        if exp_kwargs['dataset_type'] == "frame":
+            e_labels_specific = torch.argmax(e_labels_specific, dim=2)# 0-5 class labels
+        else:
+            e_labels_specific = torch.argmax(e_labels_specific, dim=1) #window labels
+        e_labels_specific = e_labels_specific.view(-1,)
+
+        #Define inputs
+        inputs = define_inputs(images=images,
+                               kinematics=kinematics,
+                               feature_extractor=feature_extractor,
+                               exp_kwargs=exp_kwargs,
+                               device=device)
+    
+        #Create label mask, we don't want to compute loss for frames which are not errors but were predicted as errors, as they will never be correct.
+        label_mask = (e_labels_specific != 0).float()  #Assuming 0 is the no error class
+        label_mask = label_mask.to(device)  #Move to the same device as the model
+
+        #As the model will only output 5 classes (0-5), we subtract 1 from the labels to match the output shape.
+        e_labels_specific = e_labels_specific - 1  #Now the labels are in the range [-1, 4], as the no error class (0) is not included in the output of the model.
+        
+        #Compute output and loss
+        outputs = model(inputs)
+        #Use the mask to restrict loss to frames that are errors
+        criterion = nn.CrossEntropyLoss(reduction="none")
+        loss = criterion(outputs, e_labels_specific)
+        loss = loss * label_mask
+        if label_mask.sum() > 0:
+            loss = loss.sum() / label_mask.sum()
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        train_loss += loss.item()
+
+        
+        if exp_kwargs['dataset_type'] == "frame":
+            _, preds = torch.max(outputs[-1].squeeze().transpose(1, 0).data, 1)
+            probs = torch.softmax(outputs[-1].squeeze().transpose(1, 0), dim=1)
+            probs_positive = probs[:, 1]
+        
+        else:
+            probs = torch.softmax(outputs, dim=1)
+            preds = torch.argmax(probs, dim=1)
+            probs_positive = probs[:, 1]
+        
+        for index in range(len(preds)):
+
+            #i. Add 1 to pred and label
+            pred = preds[index] + 1
+            label = e_labels_specific[index] + 1
+
+            #Change prediction to 0 if true label was 0
+            if label == 0:
+                pred = 0
+
+            train_preds_all.append(int(pred))
+            train_labels_all.append(int(label))
+
+            #iii. Error-specific predictions and labels, i.e., metrics for unmasked frames (true errors that were predicted as errors in the binary model,
+            #and are now being evaluated for specific error prediction)
+            if label_mask[index] > 0:
+                if label == 0:
+                    print("AI DIOS MÍO, subject: {}, index: {}, label: {}, pred: {}".format(subject, index, label, pred))  #Debugging line to check the labels and predictions
+                train_preds_error_specific.append(int(pred))
+                train_labels_error_specific.append(int(label))
+
+    if scheduler is not None:
+        scheduler.step()
+
+    train_average_loss = float(train_loss) / len(train_dataloader)
+    
+    #All error prediction (6 classes) --> use weighted metrics
+    train_f1_all = f1_score(train_labels_all, train_preds_all, average='macro')
+    train_jaccard_all = jaccard_score(train_labels_all, train_preds_all, average='macro')
+    train_accuracy_all = accuracy_score(train_labels_all, train_preds_all)
+    train_cm_all = confusion_matrix(train_labels_all, train_preds_all)
+
+    #Only Error-specific metrics (5 classes) --> use weighted metrics
+    train_f1_error_specific = f1_score(train_labels_error_specific, train_preds_error_specific, average='macro')
+    train_f1_error_specific_weighted = f1_score(train_labels_error_specific, train_preds_error_specific, average='weighted')
+    train_jaccard_error_specific = jaccard_score(train_labels_error_specific, train_preds_error_specific, average='macro')
+    train_jaccard_error_specific_weighted = jaccard_score(train_labels_error_specific, train_preds_error_specific, average='weighted')
+    train_accuracy_error_specific = accuracy_score(train_labels_error_specific, train_preds_error_specific)
+    train_cm_error_specific = confusion_matrix(train_labels_error_specific, train_preds_error_specific)
+    
+    return train_average_loss, train_f1_all, train_f1_error_specific, train_f1_error_specific_weighted, train_accuracy_all, train_accuracy_error_specific, \
+        train_jaccard_all, train_jaccard_error_specific, train_jaccard_error_specific_weighted, train_cm_all, train_cm_error_specific
 
 
 
@@ -416,7 +722,10 @@ def validate_single_epoch(model: torch.nn.Module,
     with torch.no_grad():
 
         for batch in tqdm.tqdm(test_dataloader, desc="Test"):
-            images, kinematics, g_labels, e_labels, subject = batch
+            try:
+                images, kinematics, g_labels, e_labels, subject = batch
+            except:
+                images, kinematics, g_labels, e_labels, subject, skill_level = batch
             g_labels = g_labels.to(device).float()
             g_labels = g_labels.squeeze(0)  #Remove the extra dimension for frame classification
             e_labels_specific = define_error_labels(e_labels = e_labels, exp_kwargs=exp_kwargs)
@@ -452,44 +761,296 @@ def validate_single_epoch(model: torch.nn.Module,
                 outputs_sigmoid = torch.sigmoid(outputs)
                 outputs_binary = (outputs_sigmoid > 0.5).float()
                 
-                test_f1 += f1_score(e_labels_specific.detach().cpu().numpy(), outputs_binary.detach().cpu().numpy(), average='binary', pos_label=1)
-                test_f1_weighted += f1_score(e_labels_specific.detach().cpu().numpy(), outputs_binary.detach().cpu().numpy(), average='weighted')
-                test_acc += accuracy_score(e_labels_specific.detach().cpu().numpy(), outputs_binary.detach().cpu().numpy())
-                test_jaccard += jaccard_score(e_labels_specific.detach().cpu().numpy(), outputs_binary.detach().cpu().numpy(), average='binary', pos_label=1)
-                test_cm += confusion_matrix(e_labels_specific.detach().cpu().numpy(), outputs_binary.detach().cpu().numpy())
-
-
+            
             for j in range(outputs_binary.shape[0]):
-                test_all_preds.append(outputs_binary[j].item())
-                test_all_probs.append(outputs_sigmoid[j].item())
-                test_all_labels.append(e_labels[j])
+                test_all_preds.append(outputs_binary[j].item())  
                 test_all_labels_specific.append(e_labels_specific[j].item())
                 test_all_gest_labels.append(g_labels[j].item())
+
                 if exp_kwargs['dataset_type'] == "frame":
+                    test_all_labels.append(e_labels[0, j])
                     test_all_subjects.append(subject)
+                    test_all_probs.append(None)
                 else:
+                    test_all_labels.append(e_labels[j])
+                    test_all_probs.append(outputs_sigmoid[j].item())
                     test_all_subjects.append(subject[j])
 
             total_time = (end_time - start_time)
 
     test_loss /= len(test_dataloader)
+    test_f1 = f1_score(test_all_labels_specific, test_all_preds, average='binary')
+    test_f1_weighted = f1_score(test_all_labels_specific, test_all_preds, average='weighted')
+    test_acc = accuracy_score(test_all_labels_specific, test_all_preds)
+    test_jaccard = jaccard_score(test_all_labels_specific, test_all_preds, average='binary')
+    test_cm = confusion_matrix(test_all_labels_specific, test_all_preds)
 
-    if not exp_kwargs['dataset_type'] == "frame":
-        test_f1 = f1_score(test_all_labels_specific, test_all_preds, average='binary')
-        test_f1_weighted = f1_score(test_all_labels_specific, test_all_preds, average='weighted')
-        test_acc = accuracy_score(test_all_labels_specific, test_all_preds)
-        test_jaccard = jaccard_score(test_all_labels_specific, test_all_preds, average='binary')
-        test_cm = confusion_matrix(test_all_labels_specific, test_all_preds)
-
-    else:
-        test_f1 /= len(test_dataloader)
-        test_f1_weighted /= len(test_dataloader)
-        test_acc /= len(test_dataloader)
-        test_jaccard /= len(test_dataloader)
-
-    inference_rate = total_time * 1000  #Convert to ms per frame
+    inference_rate = total_time * 1000
 
     return test_loss, test_f1, test_f1_weighted, test_acc, test_jaccard, test_cm, inference_rate, test_all_preds, test_all_probs, test_all_labels, test_all_labels_specific, test_all_gest_labels, test_all_subjects
+
+
+def validate_single_epoch_ES(model: torch.nn.Module,
+                          feature_extractor: torch.nn.Module,
+                          test_dataloader: DataLoader,
+                          criterion: torch.nn.Module,
+                          device: torch.device,
+                          exp_kwargs: dict) -> tuple:
+    
+    """
+    Validate the model for a single epoch.
+
+    Handles both global binary classification and multi-class all_errors prediction.
+
+    Returns:
+        tuple: 
+            For global: loss, f1, f1_weighted, acc, jaccard, cm, inference_rate, (optional preds, probs, labels, subjects)
+            For all_errors: loss, f1_binary, f1_macro, acc_binary, acc_macro, jaccard_binary, jaccard_macro, cm_binary, cm_macro, inference_rate, (optional ...)
+    """
+
+    if exp_kwargs['data_type'] != "kinematics":
+        model.eval()
+        feature_extractor.eval()
+    else:
+        model.eval()
+
+    test_loss, total_time = 0.0, 0.0
+
+    test_all_preds = []
+    test_all_preds_binary = []
+    test_all_labels = []
+    test_all_labels_binary = []
+    test_all_probs = []
+    test_all_subjects = []
+    test_all_gest_labels = []
+
+    with torch.no_grad():
+        for batch in tqdm.tqdm(test_dataloader, desc="Test"):
+            images, kinematics, g_labels, e_labels, subject = batch
+            g_labels = g_labels.to(device).float()
+
+            e_labels_specific = define_error_labels(e_labels=e_labels, exp_kwargs=exp_kwargs)
+            e_labels_specific = e_labels_specific.to(device).float()
+
+            if exp_kwargs['error_type'] == "global":
+                e_labels_specific = e_labels_specific.view(-1,)
+            else:  #all_errors multi-class
+                if exp_kwargs['dataset_type'] == "frame":
+                    e_labels_specific = torch.argmax(e_labels_specific, dim=2)
+                else:
+                    e_labels_specific = torch.argmax(e_labels_specific, dim=1)
+                e_labels_specific = e_labels_specific.view(-1,)
+
+            # Forward pass
+            inputs = define_inputs(images=images,
+                                   kinematics=kinematics,
+                                   feature_extractor=feature_extractor,
+                                   exp_kwargs=exp_kwargs,
+                                   device=device)
+
+            start_time = time.time()
+            outputs = model(inputs)
+            end_time = time.time()
+
+            # Loss
+            loss, outputs = compute_loss(outputs=outputs,
+                                         e_labels=e_labels_specific.float(),
+                                         criterion=criterion,
+                                         dataset_type=exp_kwargs['dataset_type'])
+            test_loss += loss.item()
+
+            if exp_kwargs['dataset_type'] == "frame":
+                _, preds = torch.max(outputs[-1].squeeze().transpose(1, 0).data, 1)
+                probs = torch.softmax(outputs[-1].squeeze().transpose(1, 0), dim=1)
+                probs_positive = probs[:, 1]
+            else:
+                probs = torch.softmax(outputs, dim=1)
+                preds = torch.argmax(probs, dim=1)
+                probs_positive = probs[:, 1]
+
+    
+            for index in range(len(preds)):
+                pred = preds[index]
+                label = e_labels_specific[index]
+                test_all_preds.append(int(pred))
+                test_all_labels.append(int(label))
+                test_all_labels_binary.append(1 if label != 0 else 0)
+                test_all_preds_binary.append(1 if pred != 0 else 0)
+                test_all_probs.append(probs_positive[index].item())
+                test_all_subjects.append(subject[index])
+                test_all_gest_labels.append(g_labels[index].item())
+
+            total_time = (end_time - start_time)
+
+    test_average_loss = test_loss / len(test_dataloader)
+
+    #Binary metrics (error vs no error)
+    test_f1_binary = f1_score(test_all_labels_binary, test_all_preds_binary, average='binary', pos_label=1)
+    test_jaccard_binary = jaccard_score(test_all_labels_binary, test_all_preds_binary, average='binary', pos_label=1)
+    test_accuracy_binary = accuracy_score(test_all_labels_binary, test_all_preds_binary)
+    test_cm_binary = confusion_matrix(test_all_labels_binary, test_all_preds_binary)
+
+    #Macro metrics (all errors)
+    test_f1_macro = f1_score(test_all_labels, test_all_preds, average='macro')
+    test_jaccard_macro = jaccard_score(test_all_labels, test_all_preds, average='macro')
+    test_accuracy_macro = accuracy_score(test_all_labels, test_all_preds)
+    test_cm_macro = confusion_matrix(test_all_labels, test_all_preds)
+
+    return (test_average_loss, test_f1_binary, test_f1_macro, test_accuracy_binary, test_accuracy_macro,
+                test_jaccard_binary, test_jaccard_macro,
+                test_cm_binary, test_cm_macro,
+                total_time * 1000,
+                test_all_probs, test_all_preds, test_all_labels,
+                test_all_labels_binary, test_all_preds_binary, test_all_gest_labels, test_all_subjects)
+
+
+def validate_single_epoch_Sequential(model:torch.nn.Module,
+                                     feature_extractor: torch.nn.Module,
+                                     binary_model: torch.nn.Module,
+                                     binary_feature_extractor: torch.nn.Module,
+                                     test_dataloader: DataLoader,
+                                     device: torch.device,
+                                     exp_kwargs: dict) -> tuple:    
+
+    """
+    Validates a single epoch for sequential models (window and frame excluding TSVN and COG).
+
+    Args:
+        model (torch.nn.Module): The model to validate.
+        feature_extractor (torch.nn.Module): The feature extractor to use.
+        binary_model (torch.nn.Module): The binary model to use.
+        binary_feature_extractor (torch.nn.Module): The binary feature extractor to use.
+        test_dataloader (DataLoader): The dataloader for the test set.
+        criterion (torch.nn.Module): The loss function.
+        device (torch.device): The device to validate on.
+        exp_kwargs (dict): Additional experiment parameters.
+
+    """
+
+
+    model.eval(), feature_extractor.eval(), binary_model.eval(), binary_feature_extractor.eval()
+
+    test_preds_all = []
+    test_labels_all = []
+    test_preds_error_specific = []
+    test_labels_error_specific = []
+    test_probs_error_specific = []
+    test_gest_labels = []
+    test_subjects = []
+    test_loss = 0.0
+    total_time = 0.0
+
+    with torch.no_grad():
+        
+        for batch in tqdm.tqdm(test_dataloader, desc="Test"):
+            
+            #1. Extract batch info
+            images, kinematics, g_labels, e_labels, subject = batch
+            g_labels = g_labels.to(device).float()
+            e_labels_specific = define_error_labels(e_labels=e_labels, exp_kwargs=exp_kwargs)
+            e_labels_specific = e_labels_specific.to(device).float()
+
+            if exp_kwargs['dataset_type'] == "frame":
+                e_labels_specific = torch.argmax(e_labels_specific, dim=2)
+            
+            else:
+                e_labels_specific = torch.argmax(e_labels_specific, dim=1)
+            
+            e_labels_specific = e_labels_specific.view(-1,)
+
+            #Subtract one to match output classes (5, as "no error" is not being considered)
+            e_labels_specific = e_labels_specific - 1
+
+            #1.1. Define inputs
+            inputs_binary = define_inputs(images=images,
+                                           kinematics=kinematics,
+                                           feature_extractor=binary_feature_extractor,
+                                           exp_kwargs=exp_kwargs,
+                                           device=device)
+            
+            inputs_sequential = define_inputs(images=images,
+                                              kinematics=kinematics,
+                                              feature_extractor=feature_extractor,
+                                              exp_kwargs=exp_kwargs,
+                                              device=device)
+
+            #2. Define mask (directly the predictions) using binary model. Instances predicted as no-error will be considered as such
+            with torch.no_grad():
+                binary_outputs = binary_model(inputs_binary)
+                binary_preds = (binary_outputs > 0.5).float()
+                
+            #3. Compute output according to sequential model
+            start_time = time.time()
+            outputs = model(inputs_sequential)
+            end_time = time.time()
+
+            #4. Compute loss: use the mask to restrict loss to instances that are errors
+            criterion = nn.CrossEntropyLoss(reduction="none")
+            loss = criterion(outputs, e_labels_specific)
+            loss = loss * binary_preds
+            
+            if binary_preds.sum() > 0:
+                loss = loss.sum() / binary_preds.sum()
+            
+            else:
+                loss = loss.mean()
+
+            test_loss += loss.item()
+
+            #5. Compute final predicitons and probabilities
+            if exp_kwargs['dataset_type'] == "frame":
+                _, preds = torch.max(outputs[-1].squeeze().transpose(1, 0).data, 1)
+                probs = torch.softmax(outputs[-1].squeeze().transpose(1, 0), dim=1)
+                probs_positive = probs[:, 1]
+            
+            else:
+                probs = torch.softmax(outputs, dim=1)
+                preds = torch.argmax(probs, dim=1)
+
+            #5. Store predictions and labels
+            #Record error-specific predictions and labels, i.e., metrics for unmasked frames (true errors that were predicted as errors in the binary model,
+            #and are now being evaluated for specific error prediction)
+            for index in range(len(preds)):
+                
+                pred = preds.data[index] + 1  #Add 1 to the prediction to match the label range (0-5) as the model outputs 5 classes (0-4) and we want to include no error class (0).
+                label = e_labels_specific.data[index] + 1  #Add 1 to the label to match the prediction range (0-5) as the model outputs 5 classes (0-4) and we want to include no error class (0).
+
+                #If the subject mask is 0, it means this frame was not predicted as an error
+                if binary_preds[index] == 0:  
+                    pred = 0
+
+                test_preds_all.append(int(pred))
+                test_labels_all.append(int(label))
+
+                if binary_preds[index] > 0:  #If the frame is an error and was predicted as an error in the binary model
+                    
+                    if label > 0:
+                        test_preds_error_specific.append(int(pred))
+                        test_labels_error_specific.append(int(label))
+                        test_probs_error_specific.append(probs.data[index].tolist())  #Record the probabilities for the error-specific predictions
+
+            total_time += (end_time - start_time) 
+
+    test_average_loss = float(test_loss) / len(test_dataloader)
+    inference_rate = (total_time / images.shape[1]) * 1000  #Convert to ms per frame
+
+    #Specific error prediction (6 classes) --> use weighted metrics
+    test_f1_all = f1_score(test_labels_all, test_preds_all, average='macro')
+    test_jaccard_all = jaccard_score(test_labels_all, test_preds_all, average='macro')
+    test_accuracy_all = accuracy_score(test_labels_all, test_preds_all)
+    test_cm_all = confusion_matrix(test_labels_all, test_preds_all) 
+
+    test_f1_error_specific = f1_score(test_labels_error_specific, test_preds_error_specific, average='macro')
+    test_f1_error_specific_weighted = f1_score(test_labels_error_specific, test_preds_error_specific, average='weighted')
+    test_jaccard_error_specific = jaccard_score(test_labels_error_specific, test_preds_error_specific, average='macro')
+    test_jaccard_error_specific_weighted = jaccard_score(test_labels_error_specific, test_preds_error_specific, average='weighted')
+    test_accuracy_error_specific = accuracy_score(test_labels_error_specific, test_preds_error_specific)
+    test_cm_error_specific = confusion_matrix(test_labels_error_specific, test_preds_error_specific)
+
+    return test_average_loss, test_f1_all, test_f1_error_specific, test_f1_error_specific_weighted, test_accuracy_all, test_accuracy_error_specific, \
+        test_jaccard_all, test_jaccard_error_specific, test_jaccard_error_specific_weighted, test_cm_all, test_cm_error_specific, \
+        inference_rate, test_preds_all, test_preds_error_specific, test_probs_error_specific, \
+        test_labels_all, test_labels_error_specific, test_gest_labels, test_subjects
 
 
 
@@ -747,8 +1308,8 @@ def train_single_epoch_TSVN(model: torch.nn.Module,
 
         #Re-define e_labels to match the output shape
         no_e_labels = 1 - e_labels_specific
-        no_e_labels = no_e_labels.to(outputs.device) #Move to the same device as outputs
-        e_labels_complete = torch.cat((no_e_labels, e_labels_specific), dim=0) #Concatenate no error and error labels; shape (2, n_frames)
+        no_e_labels = no_e_labels.to(device) #Move to the same device as outputs
+        e_labels_complete = torch.cat((no_e_labels, e_labels), dim=0) #Concatenate no error and error labels; shape (2, n_frames)
         e_labels_complete = e_labels_complete.transpose(1, 0)
         
         #Compupte loss and predictions
@@ -850,9 +1411,9 @@ def validate_single_epoch_TSVN(model: torch.nn.Module,
             e_labels_specific = e_labels_specific.squeeze(0)
 
             for j in range(outputs_binary.shape[0]):
-                test_all_probs.append(outputs[j].item())
+                test_all_probs.append(outputs[j, 1].item())
                 test_all_preds.append(outputs_binary[j].item())
-                test_all_labels.append(e_labels[j])
+                test_all_labels.append(e_labels[0, j])
                 test_all_labels_specific.append(e_labels_specific[j].item())
                 test_all_gest_labels.append(g_labels[j].item())
                 test_all_subjects.append(subject)
@@ -860,11 +1421,11 @@ def validate_single_epoch_TSVN(model: torch.nn.Module,
             total_time += (end_time - start_time)
 
     test_loss /= len(test_dataloader)
-    test_f1 = f1_score(test_all_labels, test_all_preds, average='binary')
-    test_f1_weighted = f1_score(test_all_labels, test_all_preds, average='weighted')
-    test_acc = accuracy_score(test_all_labels, test_all_preds)
-    test_jaccard = jaccard_score(test_all_labels, test_all_preds, average='binary')
-    test_cm = confusion_matrix(test_all_labels, test_all_preds)
+    test_f1 = f1_score(test_all_labels_specific, test_all_preds, average='binary')
+    test_f1_weighted = f1_score(test_all_labels_specific, test_all_preds, average='weighted')
+    test_acc = accuracy_score(test_all_labels_specific, test_all_preds)
+    test_jaccard = jaccard_score(test_all_labels_specific, test_all_preds, average='binary')
+    test_cm = confusion_matrix(test_all_labels_specific, test_all_preds)
     inference_rate = total_time / images.shape[1] * 1000
 
     return test_loss, test_f1, test_f1_weighted, test_acc, test_jaccard, test_cm, inference_rate, test_all_preds, test_all_probs, test_all_labels, test_all_labels_specific, test_all_gest_labels, test_all_subjects
@@ -1409,12 +1970,13 @@ def train_single_epoch_COG_Sequential(model: torch.nn.Module,
 
     train_average_loss = float(train_loss) / len(train_dataloader)
     
-    #Specific error prediction (6 classes) --> use weighted metrics
+    #All error prediction (6 classes) --> use weighted metrics
     train_f1_all = f1_score(train_labels_all, train_preds_all, average='macro')
     train_jaccard_all = jaccard_score(train_labels_all, train_preds_all, average='macro')
     train_accuracy_all = accuracy_score(train_labels_all, train_preds_all)
     train_cm_all = confusion_matrix(train_labels_all, train_preds_all)
 
+    #Only Error-specific metrics (5 classes) --> use weighted metrics
     train_f1_error_specific = f1_score(train_labels_error_specific, train_preds_error_specific, average='macro')
     train_f1_error_specific_weighted = f1_score(train_labels_error_specific, train_preds_error_specific, average='weighted')
     train_jaccard_error_specific = jaccard_score(train_labels_error_specific, train_preds_error_specific, average='macro')
@@ -1720,17 +2282,51 @@ def load_model_local(model_folder:str,
     #Load model
     model_path = os.path.join(model_folder, f'best_model_{setting}_{out}.pt')
     best_model = torch.load(model_path, map_location="cpu", weights_only=False)
-    model.load_state_dict(best_model['model_state_dict'])
+    model.load_state_dict(best_model['model'])
     model.to(device)
     
     #Load feature extractor if necessary
     if exp_kwargs['data_type'] != 'kinematics':
 
         if exp_kwargs['video_dims'] != 2048:
-            feature_extractor.load_state_dict(best_model['feature_extractor_state_dict'])
+            feature_extractor.load_state_dict(best_model['feature_extractor'])
             feature_extractor.to(device) 
 
     return feature_extractor, model
+
+
+def load_binary_model_local(model_folder:str,
+                       model_name:str,
+                       outs:list,
+                       exp_kwargs:dict,
+                       device:torch.device):
+
+    model_folder = f'models/{exp_kwargs["data_type"]}/{exp_kwargs["frequency"]}Hz/{model_name}/'
+    model_dict = {}
+    fe_dict = {}
+    for out in outs:
+
+        model = LSTM(in_features=58, window_size=10, 
+                        hidden_size=128, num_layers=3,
+                        n_classes=1).to(device)
+        
+        feature_extractor = FeatureExtractor(input_dim=2048, output_dim=exp_kwargs['video_dims'], hidden_dims=[512, 256]).to(device)
+        
+        model_path = os.path.join(model_folder, f'best_model_LOSO_{out}.pt')
+        best_model = torch.load(model_path, weights_only=False)
+
+        feature_extractor_state_dict = best_model['feature_extractor']
+        model_state_dict = best_model['model']
+
+        feature_extractor.load_state_dict(feature_extractor_state_dict)
+        model.load_state_dict(model_state_dict)
+
+        model_dict[out] = model
+        fe_dict[out] = feature_extractor
+
+    print(f"Loaded binary models from {model_folder}.")
+
+    return model_dict, fe_dict
 
 
 def process_all_labels(all_labels: list,
@@ -1741,6 +2337,8 @@ def process_all_labels(all_labels: list,
     all_labels should be a tensor of lenght n_windows/n_frames, where each elements is a tensor of shape (5,) -as there are 5 error types-.
     When printing one of the elements, it shows:
     tensor([1., 1., 0., 0., 1.])
+    or 
+    'tensor([0, 1, 0, 0, 0, 0, 1], dtype=torch.int32)'
     However, this is a string! Meaning element[0] is 't', element[1] is 'e', and so on. This is due to mlflow's serialization of tensors.
     We need to convert the string to a tensor of floats.
 
@@ -1754,10 +2352,14 @@ def process_all_labels(all_labels: list,
     if exp_kwargs['compute_from_str'] == True:
         
         length = len(all_labels)
-        processed_labels = torch.zeros((length, 5), dtype=torch.float32)
 
         #Manually define the positions of the string where the labels are stored. t is at position 0, e at position 1, and so on. An example string is "tensor([1., 1., 0., 0., 1.])"
-        error_label_positions = [8, 12, 16, 20, 24]  #Positions of t, e, n, a, l in the string
+        if exp_kwargs['dataset_type'] == 'frame':
+            error_label_positions = [8, 12, 16, 20, 24]  
+            processed_labels = torch.zeros((length, 5), dtype=torch.float32)
+        elif exp_kwargs['dataset_type'] == 'window':
+            error_label_positions = [8, 11, 14, 17, 20, 23, 26] 
+            processed_labels = torch.zeros((length, 7), dtype=torch.float32)
 
         for i, label in enumerate(all_labels):
             for j, pos in enumerate(error_label_positions):
@@ -1783,9 +2385,7 @@ def retrieve_results_mlflow(outs: list,
     LOSO_cm_train, LOSO_cm_test = (np.zeros((2, 2)) for _ in range(2))  #Init confusion matrices 
 
     return_train_preds = exp_kwargs['return_train_preds'] if 'return_train_preds' in exp_kwargs else False
-
-    if exp_kwargs['dataset_type'] == 'frame':
-        test_all_preds, test_all_probs, test_all_labels, test_all_labels_specific, test_all_gest_labels, test_all_subjects = ({} for _ in range(6))
+    test_all_preds, test_all_probs, test_all_labels, test_all_labels_specific, test_all_gest_labels, test_all_subjects = ({} for _ in range(6))
 
     if return_train_preds:
         train_all_preds, train_all_probs, train_all_labels, train_all_subjects = ({} for _ in range(4))
@@ -1829,17 +2429,30 @@ def retrieve_results_mlflow(outs: list,
             LOSO_cm_test += np.array(best_model_dict['test_cm_fold'])
 
             if return_train_preds:
-                train_all_preds[out] = best_model_dict['train_all_preds_fold']
-                train_all_probs[out] = best_model_dict['train_all_probs_fold']
-                train_all_labels[out] = best_model_dict['train_all_labels_fold']
-                train_all_subjects[out] = best_model_dict['train_all_subjects_fold']
-            
-            if exp_kwargs['dataset_type'] == 'frame':
                 try:
+                    train_all_preds[out] = best_model_dict['train_all_preds_fold']
+                    train_all_probs[out] = best_model_dict['train_all_probs_fold']
+                    train_all_labels[out] = best_model_dict['train_all_labels_fold']
+                    train_all_subjects[out] = best_model_dict['train_all_subjects_fold']
+
+                except:
+                    train_all_preds[out] = best_model_dict['train_all_preds']
+                    train_all_probs[out] = best_model_dict['train_all_probs']
+                    train_all_labels[out] = best_model_dict['train_all_labels']
+                    train_all_subjects[out] = best_model_dict['train_all_subjects']
+
+            if return_train_preds or exp_kwargs['dataset_type'] == 'frame':
+                try:
+                
                     test_all_preds[out] = best_model_dict['test_all_preds_fold']
-                    test_all_probs[out] = best_model_dict['test_all_probs_fold']
+                    try:
+                        test_all_probs[out] = best_model_dict['test_all_probs_fold']
+                        test_all_labels_specific[out] = best_model_dict['test_all_labels_specific_fold']
+                    except:
+                        test_all_probs[out] = []
+                        test_all_labels_specific[out] = []
+                    
                     test_all_labels[out] = best_model_dict['test_all_labels_fold']
-                    test_all_labels_specific[out] = best_model_dict['test_all_labels_specific_fold']
                     test_all_gest_labels[out] = best_model_dict['test_all_gest_labels_fold']
                     test_all_subjects[out] = best_model_dict['test_all_subjects_fold']
                 
@@ -1851,7 +2464,11 @@ def retrieve_results_mlflow(outs: list,
                     test_all_gest_labels[out] = best_model_dict['test_all_gest_labels']
                     test_all_subjects[out] = best_model_dict['test_all_subjects']
 
-                test_all_labels[out] = process_all_labels(test_all_labels[out], exp_kwargs=exp_kwargs)
+                try:
+                    test_all_labels[out] = process_all_labels(test_all_labels[out], exp_kwargs=exp_kwargs)
+                
+                except:
+                    pass
 
     #Change confusion matrices to integer type
     LOSO_cm_train = LOSO_cm_train.astype(int)
@@ -1859,19 +2476,13 @@ def retrieve_results_mlflow(outs: list,
 
     if return_train_preds:
 
-        if exp_kwargs['dataset_type'] == 'frame':
-            return (LOSO_f1_train, LOSO_f1_test,
+        return (LOSO_f1_train, LOSO_f1_test,
                     LOSO_acc_train, LOSO_acc_test,
                     LOSO_jaccard_train, LOSO_jaccard_test,
                     LOSO_cm_train, LOSO_cm_test,
                     train_all_preds, train_all_probs, train_all_labels, train_all_subjects,
                     test_all_preds, test_all_probs, test_all_labels, test_all_labels_specific, test_all_gest_labels, test_all_subjects)
-        else:
-            return (LOSO_f1_train, LOSO_f1_test,
-                    LOSO_acc_train, LOSO_acc_test,
-                    LOSO_jaccard_train, LOSO_jaccard_test,
-                    LOSO_cm_train, LOSO_cm_test,
-                    train_all_preds, train_all_probs, train_all_labels, train_all_subjects)
+        
     else:  
         if exp_kwargs['dataset_type'] == 'frame':
             return (LOSO_f1_train, LOSO_f1_test,
@@ -1910,9 +2521,8 @@ def retrieve_results_mlflow_ES(outs: list,
     LOSO_cm_train_binary, LOSO_cm_test_binary = (np.zeros((2, 2)) for _ in range(2))  #Init confusion matrices
     LOSO_cm_train, LOSO_cm_test = (np.zeros((6, 6)) for _ in range(2))  #Init confusion matrices for specific error 
 
-    if exp_kwargs['dataset_type'] == 'frame':
-        test_all_preds, test_all_preds_binary, test_all_probs, test_all_labels, test_all_labels_binary, \
-        test_all_gest_labels, test_all_subjects = ({} for _ in range(7))
+    test_all_preds, test_all_preds_binary, test_all_probs, test_all_labels, test_all_labels_binary, \
+    test_all_gest_labels, test_all_subjects = ({} for _ in range(7))
 
     for out in outs:
 
@@ -1962,19 +2572,12 @@ def retrieve_results_mlflow_ES(outs: list,
     LOSO_cm_test = LOSO_cm_test.astype(int)
     LOSO_cm_test_binary = LOSO_cm_test_binary.astype(int)
 
-    if exp_kwargs['dataset_type'] == 'frame':
-        return (LOSO_f1_train, LOSO_f1_train_binary, LOSO_f1_test, LOSO_f1_test_binary,
+    return (LOSO_f1_train, LOSO_f1_train_binary, LOSO_f1_test, LOSO_f1_test_binary,
                 LOSO_acc_train, LOSO_acc_train_binary, LOSO_acc_test, LOSO_acc_test_binary,
                 LOSO_jaccard_train, LOSO_jaccard_train_binary, LOSO_jaccard_test, LOSO_jaccard_test_binary,
                 LOSO_cm_train, LOSO_cm_train_binary, LOSO_cm_test, LOSO_cm_test_binary,
                 test_all_preds, test_all_preds_binary, test_all_probs, test_all_labels, test_all_labels_binary,
                 test_all_gest_labels, test_all_subjects)
-    
-    else:
-        return (LOSO_f1_train, LOSO_f1_train_binary, LOSO_f1_test, LOSO_f1_test_binary,
-                LOSO_acc_train, LOSO_acc_test,
-                LOSO_jaccard_train, LOSO_jaccard_train_binary, LOSO_jaccard_test, LOSO_jaccard_test_binary,
-                LOSO_cm_train, LOSO_cm_train_binary, LOSO_cm_test, LOSO_cm_test_binary)
     
 
 def retrieve_results_mlflow_sequential(outs: list,
@@ -2317,8 +2920,9 @@ def compute_window_metrics(outs: list,
 def create_binary_mask(preds_binary: list,
                        subjects: list,
                        out: str,
-                       fold_data_path: str,):
-    
+                       fold_data_path: str,
+                       exp_kwargs: dict=None):
+
     """
     Create a binary mask from the predictions and subjects to mask specific error predictions.
     In parallel,  Needle Drop positions from the predictions are dropped as well to match the specific error predictions.
@@ -2338,11 +2942,13 @@ def create_binary_mask(preds_binary: list,
     binary_subjects = np.array(subjects[out])
 
     mask_position_ND_files = []
-    for file in os.listdir(fold_data_path):
-        if file.startswith('mask_position_ND_') and file.endswith('.pth'):
-            subject = file.split('.')[0].replace('mask_position_ND_', '')  #Extract subject from filename
-            mask_position_ND = torch.load(os.path.join(fold_data_path, file)) 
-            mask_position_ND_files.append((subject, mask_position_ND))
+    if exp_kwargs['delete_ND']:
+        
+        for file in os.listdir(fold_data_path):
+            if file.startswith('mask_position_ND_') and file.endswith('.pth'):
+                subject = file.split('.')[0].replace('mask_position_ND_', '')  #Extract subject from filename
+                mask_position_ND = torch.load(os.path.join(fold_data_path, file)) 
+                mask_position_ND_files.append((subject, mask_position_ND))
     
     #Pre ii) If mask_position_ND exists, find indices of the subject.
     print(binary_mask.shape)
@@ -2427,17 +3033,8 @@ def save_model(best_model: dict,
     """
     
     torch.save({
-            'feature_extractor_state_dict': best_model['feature_extractor'],
-            'model_state_dict': best_model['model'],
-            'epoch': best_model['epoch'],
-            'train_f1_fold': best_model['train_f1_fold'],
-            'test_f1_fold': best_model['test_f1_fold'],
-            'train_acc_fold': best_model['train_acc_fold'],
-            'test_acc_fold': best_model['test_acc_fold'],
-            'train_jaccard_fold': best_model['train_jaccard_fold'],
-            'test_jaccard_fold': best_model['test_jaccard_fold'],
-            'train_cm_fold': best_model['train_cm_fold'],
-            'test_cm_fold': best_model['test_cm_fold'],
+            'feature_extractor': best_model['feature_extractor'],
+            'model': best_model['model'],
         }, model_path)
 
     print(f"Model saved to {model_path}")  
@@ -2447,16 +3044,17 @@ def instantiate_model(exp_kwargs: dict,
                       in_features: int,
                       window_size: int,
                       device: torch.device=None) -> torch.nn.Module:
-    
+
     model_name = exp_kwargs['model_name']
     if model_name == "SimpleCNN":
-        model = CNN(in_features=in_features, window_size=window_size)
+        model = CNN(in_features=in_features, window_size=window_size, n_classes=exp_kwargs['out_features'] if 'out_features' in exp_kwargs else 1)
     
     elif model_name == "SimpleLSTM":
         hidden_size = exp_kwargs['hidden_size']
         num_layers = exp_kwargs['num_layers']   
         model = LSTM(in_features=in_features, window_size=window_size, 
-                     hidden_size=hidden_size, num_layers=num_layers)
+                     hidden_size=hidden_size, num_layers=num_layers,
+                     n_classes=exp_kwargs['out_features'] if 'out_features' in exp_kwargs else 1)
 
     elif model_name == "Siamese_CNN":
         model = Siamese_CNN(in_features=in_features, window_size=window_size)

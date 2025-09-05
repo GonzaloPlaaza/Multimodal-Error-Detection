@@ -54,13 +54,15 @@ class CNN(nn.Module):
 
     def __init__(self, 
                  in_features: int = 58, # 26 kinematic + 32 image features
-                 window_size: int = 30):
+                 window_size: int = 30,
+                 n_classes: int = 1):
 
         super(CNN,self).__init__()
         
         self.name = "SimpleCNN"
         self.window_size = window_size 
         self.in_features = in_features 
+        self.n_classes = n_classes
         if self.window_size == 10: #10 sample window limits convolutional layer size
             self.convolutional_layers = nn.Sequential(
                 nn.Conv1d(self.in_features, 64, kernel_size=3, stride=1),
@@ -106,7 +108,7 @@ class CNN(nn.Module):
             nn.Linear(32,16),
             nn.ReLU(),
             nn.BatchNorm1d(16),
-            nn.Linear(16,1))
+            nn.Linear(16, self.n_classes))
 
         self.initialize_weights()
     
@@ -141,7 +143,8 @@ class LSTM(nn.Module):
                  in_features: int = 58,
                  window_size: int = 30,
                  num_layers: int = 3,
-                 hidden_size: int = 128):
+                 hidden_size: int = 128,
+                 n_classes: int = 1):
         
         super(LSTM, self).__init__()
         self.name = "SimpleLSTM"
@@ -149,6 +152,7 @@ class LSTM(nn.Module):
         self.in_features = in_features
         self.layer_dim = num_layers
         self.hidden_size = hidden_size
+        self.n_classes = n_classes
        
         #self.lstm1 = nn.LSTM(self.in_features, 512, dropout=0, num_layers=self.layer_dim,batch_first=True)
         #self.lstm2 = nn.LSTM(512, 128, dropout=0, num_layers=self.layer_dim,batch_first=True)
@@ -169,7 +173,6 @@ class LSTM(nn.Module):
             # Flatten the output to get the number of features
             lstm_out = lstm_out[:, -1, :]  # Get the last time step output
             n_features = lstm_out.shape[1]
-            print(n_features)
 
         self.linear_layers = nn.Sequential(nn.Flatten(),
                                            nn.Linear(n_features, 256),
@@ -178,7 +181,7 @@ class LSTM(nn.Module):
                                             nn.Linear(256, 64),
                                             nn.ReLU(),
                                             nn.BatchNorm1d(64),
-                                            nn.Linear(64, 1))
+                                            nn.Linear(64, self.n_classes))
         
         self.initialize_weights()
 

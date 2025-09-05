@@ -318,9 +318,7 @@ class COG(nn.Module):
         
         
         if self.use_all_gestures:
-
-            self.gest_list = ['novice', 'intermediate', 'expert'] 
-            """
+            
             self.gest_list = ['reaching for needle with right hand',
                         'positioning needle',
                         'pushing needle through tissue',
@@ -338,7 +336,7 @@ class COG(nn.Module):
                         'pulling suture with both hands'
             ]
             
-            
+            """
             #Use 11 non-sense gestures and 4 real ones
             self.gest_list = ['eating a needle with the left hand'
                               'throwing a surgeon at the needle',

@@ -41,6 +41,9 @@ class CustomWindowDataset(Dataset):
         #Compute error class balance
         self.binary_error_distribution = (1 - self.e_labels_data[:, -1].sum() / len(self.e_labels_data), 
                                           self.e_labels_data[:, -1].sum() / len(self.e_labels_data))
+        
+        #Use the reciprocal of the frequency as weights
+        self.specific_error_distribution = (len(self.e_labels_data) / (self.e_labels_data[:, :-1].sum(axis=0) + 1e-5)).tolist()
 
     def __len__(self):
         return len(self.image_data)
